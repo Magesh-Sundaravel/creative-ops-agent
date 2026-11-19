@@ -1,17 +1,39 @@
 [project]
 name = "creative-ops"
 version = "0.1.0"
-description = "Add your description here"
+description = "Agentic system that takes a creative brief from intake to production handoff."
 readme = "README.md"
 authors = [
     { name = "Magesh Sundaravel", email = "magesh094@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = []
-
-[project.scripts]
-creative-ops = "creative_ops:main"
+dependencies = [
+    "anthropic>=2.10.0",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.3",
+]
 
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "ruff>=0.17.5",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = ["integration: tests that need external services or real API calls"]

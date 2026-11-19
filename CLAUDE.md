@@ -64,9 +64,9 @@ uv run python evals/run_evals.py
 
 ## Build plan
 
-0. [ ] Claude Code setup: rules, settings, hooks, skills  ← CURRENT
-1. [ ] Scaffold: uv, Ruff, pytest, pre-commit, config, Pydantic schemas
-2. [ ] Raw agent loop (`stop_reason`-driven), one dummy tool, unit tests
+0. [x] Claude Code setup: rules, settings, hooks, skills
+1. [x] Scaffold: uv, Ruff, pytest, pre-commit, config (pydantic-settings)
+2. [ ] Raw agent loop (`stop_reason`-driven), one dummy tool, unit tests  ← CURRENT
 3. [ ] Intake agent: brief → `StructuredBrief` via tool use, `missing_fields`
 4. [ ] Mock MCP server: DAM + tracker tools, brand guidelines as resources, seed data
 5. [ ] Review + Handoff subagents, least-privilege tool sets

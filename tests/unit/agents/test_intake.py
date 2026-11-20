@@ -262,3 +262,50 @@ async def test_blank_strings_count_as_missing(fake_client, make_message):
         "budget.currency",
     } <= set(result.missing_fields)
     assert result.critical_missing is True
+
+
+async def test_text_that_is_not_a_brief_gives_an_all_missing_result(fake_client, make_message):
+    client = fake_client(
+        make_message("tool_use", tool_uses=[submit("t1", {}, ["Text is not a Brief"])]),
+        make_message("end_turn"),
+    )
+
+    result = await intake(client, "Hi, what's the weather like?")
+
+    assert result.missing_fields == [
+        "brand",
+        "campaign_name",
+        "season",
+        "objective",
+        "target_audience",
+        "key_message",
+        "usage_rights",
+        "deliverables",
+        "mandatories",
+        "references",
+        "deadline",
+        "budget",
+    ]
+    assert result.critical_missing is True
+
+
+@pytest.mark.parametrize(
+    "rule",
+    [
+        "resolve a date with no year against today's date",
+        "relative or event-based date",
+        "budget range",
+        "quoting the Brief",
+        "past date",
+        "never derive the deadline from deliverable due dates",
+        "due date is after the deadline",
+        "not a Brief",
+    ],
+)
+async def test_system_prompt_states_the_extraction_rules(fake_client, make_message, rule):
+    client = fake_client(make_message("end_turn"))
+
+    with pytest.raises(NoValidSubmission):
+        await intake(client, BRIEF)
+
+    assert rule.lower() in client.messages.calls[0]["system"].lower()

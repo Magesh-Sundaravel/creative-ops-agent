@@ -1,0 +1,3 @@
+# Hand-written agent loop over the Messages API
+
+Agents run on our own async loop. It calls the Messages API directly and decides what to do next from `stop_reason`. We chose this over the Anthropic SDK's `tool_runner` and over agent frameworks such as LangChain and LangGraph. Owning the loop gives us explicit control over how tool errors go back to the model (`is_error` results), a hard iteration cap that raises when hit, and a complete message history for each Run. Later steps depend on that history for the trace view and for evals. Please don't replace this loop with `tool_runner` without revisiting this decision.

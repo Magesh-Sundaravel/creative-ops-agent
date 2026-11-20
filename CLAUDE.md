@@ -84,3 +84,13 @@ Move the checkbox and CURRENT marker only when I confirm a step is done.
 - Use regex/text parsing to drive agent control flow.
 - Let a subagent write to the tracker or DAM unless a gate allows it.
 - Edit `.env`, expected outputs in `evals/datasets/`, or seed data without asking.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on Magesh-Sundaravel/creative-ops-agent, via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Domain docs
+
+Single-context: root `GLOSSARY.md` + ADRs in `docs/decisions/`. See `docs/agents/domain.md`.

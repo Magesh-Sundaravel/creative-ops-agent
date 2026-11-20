@@ -1,11 +1,12 @@
 """Hand-written, stop_reason-driven agent loop (see ADR 0001)."""
 
+import asyncio
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
 from anthropic import AsyncAnthropic, omit
-from anthropic.types import MessageParam, ToolResultBlockParam
+from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 from pydantic import BaseModel
 
 from creative_ops.config import get_settings
@@ -74,6 +75,31 @@ class LoopResult(BaseModel):
     usage: TokenUsage
 
 
+async def _call_tool(block: ToolUseBlock, tools_by_name: dict[str, Tool]) -> ToolResultBlockParam:
+    """Run one tool call; a failure becomes an `is_error` result the model can see."""
+
+    def error(message: str) -> ToolResultBlockParam:
+        return {
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": message,
+            "is_error": True,
+        }
+
+    tool = tools_by_name.get(block.name)
+    if tool is None:
+        return error(f"Unknown tool {block.name!r}. Available tools: {sorted(tools_by_name)}")
+    try:
+        args = tool.input_model.model_validate(block.input)
+    except Exception as exc:  # validators may raise more than ValidationError
+        return error(f"Invalid input for tool {block.name!r}: {exc}")
+    try:
+        output = await tool.handler(args)
+    except Exception as exc:
+        return error(f"Tool {block.name!r} failed: {type(exc).__name__}: {exc}")
+    return {"type": "tool_result", "tool_use_id": block.id, "content": output}
+
+
 async def run(
     client: AsyncAnthropic,
     prompt: str,
@@ -116,12 +142,13 @@ async def run(
             break
         if iteration == max_iterations:
             raise MaxIterationsExceeded(max_iterations, messages, usage)
-        results: list[ToolResultBlockParam] = []
-        for block in response.content:
-            if block.type == "tool_use":
-                tool = tools_by_name[block.name]
-                output = await tool.handler(tool.input_model.model_validate(block.input))
-                results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+        results: list[ToolResultBlockParam] = await asyncio.gather(
+            *(
+                _call_tool(block, tools_by_name)
+                for block in response.content
+                if block.type == "tool_use"
+            )
+        )
         if not results:
             raise UnexpectedStopReason(response.stop_reason, messages, usage)
         messages.append({"role": "user", "content": results})

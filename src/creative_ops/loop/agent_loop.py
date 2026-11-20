@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any
 
-from anthropic import AsyncAnthropic
+from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam
 from pydantic import BaseModel
 
@@ -26,15 +26,26 @@ _OUTCOMES: dict[str, StopOutcome] = {
 }
 
 
-class UnexpectedStopReason(RuntimeError):
-    """The model stopped for a reason the loop does not handle."""
-
-
 class TokenUsage(BaseModel):
     """Tokens consumed by a Run."""
 
     input_tokens: int
     output_tokens: int
+
+
+class UnexpectedStopReason(RuntimeError):
+    """The model stopped for a reason the loop does not handle.
+
+    Carries the Run's trace so far, so a failed Run can still be inspected.
+    """
+
+    def __init__(
+        self, stop_reason: str | None, messages: list[MessageParam], usage: TokenUsage
+    ) -> None:
+        super().__init__(f"Unhandled stop_reason: {stop_reason!r}")
+        self.stop_reason = stop_reason
+        self.messages = messages
+        self.usage = usage
 
 
 class LoopResult(BaseModel):
@@ -61,17 +72,19 @@ async def run(
     if model is None:
         model = get_settings().model_fast
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
-    request: dict = {"model": model, "max_tokens": max_tokens}
-    if system is not None:
-        request["system"] = system
-    response = await client.messages.create(**request, messages=list(messages))
+    response = await client.messages.create(
+        model=model,
+        max_tokens=max_tokens,
+        system=system if system is not None else omit,
+        messages=list(messages),
+    )
     messages.append({"role": "assistant", "content": response.content})
-    if response.stop_reason not in _OUTCOMES:
-        raise UnexpectedStopReason(f"Unhandled stop_reason: {response.stop_reason!r}")
-    text = "".join(block.text for block in response.content if block.type == "text")
     usage = TokenUsage(
         input_tokens=response.usage.input_tokens, output_tokens=response.usage.output_tokens
     )
+    if response.stop_reason not in _OUTCOMES:
+        raise UnexpectedStopReason(response.stop_reason, messages, usage)
+    text = "".join(block.text for block in response.content if block.type == "text")
     return LoopResult(
         text=text, outcome=_OUTCOMES[response.stop_reason], messages=messages, usage=usage
     )

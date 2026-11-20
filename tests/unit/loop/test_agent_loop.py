@@ -4,6 +4,7 @@ import subprocess
 import sys
 
 import pytest
+from anthropic import omit
 
 from creative_ops.config import get_settings
 from creative_ops.loop.agent_loop import StopOutcome, TokenUsage, UnexpectedStopReason, run
@@ -48,6 +49,22 @@ async def test_run_unrecognised_stop_reason_raises(fake_client, make_message):
         await run(client, "Go", model=MODEL)
 
 
+async def test_run_unrecognised_stop_reason_error_carries_trace(fake_client, make_message):
+    reply = make_message("pause_turn", text="thinking", input_tokens=12, output_tokens=7)
+    client = fake_client(reply)
+
+    with pytest.raises(UnexpectedStopReason) as exc_info:
+        await run(client, "Go", model=MODEL)
+
+    error = exc_info.value
+    assert error.stop_reason == "pause_turn"
+    assert error.messages == [
+        {"role": "user", "content": "Go"},
+        {"role": "assistant", "content": reply.content},
+    ]
+    assert error.usage == TokenUsage(input_tokens=12, output_tokens=7)
+
+
 async def test_run_with_system_sends_system_prompt(fake_client, make_message):
     client = fake_client(make_message("end_turn", text="ok"))
 
@@ -61,7 +78,7 @@ async def test_run_without_system_omits_system_param(fake_client, make_message):
 
     await run(client, "Go", model=MODEL)
 
-    assert "system" not in client.messages.calls[0]
+    assert client.messages.calls[0]["system"] is omit
 
 
 async def test_run_completed_returns_full_message_history(fake_client, make_message):

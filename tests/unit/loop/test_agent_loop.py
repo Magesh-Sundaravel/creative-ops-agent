@@ -294,3 +294,46 @@ async def test_run_max_iterations_error_carries_trace(fake_client, make_message)
         {"role": "assistant", "content": second.content},
     ]
     assert error.usage == TokenUsage(input_tokens=230, output_tokens=28)
+
+
+@pytest.mark.parametrize("max_iterations", [0, -1])
+async def test_run_max_iterations_below_one_raises_before_calling_model(
+    fake_client, max_iterations
+):
+    client = fake_client()
+
+    with pytest.raises(ValueError, match="max_iterations"):
+        await run(client, "Go", [], model=MODEL, max_iterations=max_iterations)
+
+    assert client.messages.calls == []
+
+
+async def test_run_duplicate_tool_names_raise_before_calling_model(fake_client):
+    client = fake_client()
+
+    with pytest.raises(ValueError, match="add"):
+        await run(client, "Go", [make_add_tool(), make_add_tool()], model=MODEL)
+
+    assert client.messages.calls == []
+
+
+async def test_run_without_tools_omits_tools_param(fake_client, make_message):
+    client = fake_client(make_message("end_turn", text="ok"))
+
+    await run(client, "Go", [], model=MODEL)
+
+    assert client.messages.calls[0]["tools"] is omit
+
+
+async def test_run_tool_use_without_tool_blocks_raises_with_trace(fake_client, make_message):
+    reply = make_message("tool_use", text="I'll use a tool.")
+    client = fake_client(reply)
+
+    with pytest.raises(UnexpectedStopReason) as exc_info:
+        await run(client, "Go", [make_add_tool()], model=MODEL)
+
+    assert exc_info.value.messages == [
+        {"role": "user", "content": "Go"},
+        {"role": "assistant", "content": reply.content},
+    ]
+    assert len(client.messages.calls) == 1

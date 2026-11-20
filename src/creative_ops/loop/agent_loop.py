@@ -88,9 +88,15 @@ async def run(
 
     `model` defaults to the configured fast model, resolved here rather than at import.
     """
+    if max_iterations < 1:
+        raise ValueError(f"max_iterations must be at least 1, got {max_iterations}")
+    tools_by_name = {tool.name: tool for tool in tools}
+    if len(tools_by_name) != len(tools):
+        names = [tool.name for tool in tools]
+        duplicates = sorted({name for name in names if names.count(name) > 1})
+        raise ValueError(f"Duplicate tool names: {duplicates}")
     if model is None:
         model = get_settings().model_fast
-    tools_by_name = {tool.name: tool for tool in tools}
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
     usage = TokenUsage(input_tokens=0, output_tokens=0)
     for iteration in range(1, max_iterations + 1):
@@ -99,7 +105,7 @@ async def run(
             max_tokens=max_tokens,
             system=system if system is not None else omit,
             messages=list(messages),
-            tools=[tool.to_param() for tool in tools],
+            tools=[tool.to_param() for tool in tools] if tools else omit,
         )
         messages.append({"role": "assistant", "content": response.content})
         usage = TokenUsage(
@@ -116,6 +122,8 @@ async def run(
                 tool = tools_by_name[block.name]
                 output = await tool.handler(tool.input_model.model_validate(block.input))
                 results.append({"type": "tool_result", "tool_use_id": block.id, "content": output})
+        if not results:
+            raise UnexpectedStopReason(response.stop_reason, messages, usage)
         messages.append({"role": "user", "content": results})
     if response.stop_reason not in _OUTCOMES:
         raise UnexpectedStopReason(response.stop_reason, messages, usage)

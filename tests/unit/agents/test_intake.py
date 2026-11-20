@@ -241,3 +241,24 @@ async def test_missing_deliverable_due_date_is_not_critical(fake_client, make_me
 
     assert "deliverables[0].due_date" in result.missing_fields
     assert result.critical_missing is False
+
+
+async def test_blank_strings_count_as_missing(fake_client, make_message):
+    brief = {
+        **COMPLETE,
+        "objective": "   ",
+        "campaign_name": "",
+        "deliverables": [{"asset_type": "reel", "channel": ""}],
+        "budget": {"amount": "40000", "currency": " "},
+    }
+
+    result = await submit_and_intake(fake_client, make_message, brief)
+
+    assert result.brief.objective is None
+    assert {
+        "objective",
+        "campaign_name",
+        "deliverables[0].channel",
+        "budget.currency",
+    } <= set(result.missing_fields)
+    assert result.critical_missing is True

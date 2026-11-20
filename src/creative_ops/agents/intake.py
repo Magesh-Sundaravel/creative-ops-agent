@@ -31,13 +31,34 @@ class IntakeResult(BaseModel):
 
     brief: StructuredBrief
     missing_fields: list[str]
+    critical_missing: bool
     ambiguities: list[str]
     loop_result: LoopResult
 
 
-def _missing_fields(brief: StructuredBrief) -> list[str]:
-    """Top-level fields the Brief gives no value for (empty or an empty list)."""
-    return [name for name, value in brief if value is None or value == []]
+_CRITICAL_FIELDS = {"brand", "objective", "deadline", "deliverables"}
+_CRITICAL_DELIVERABLE_FIELDS = {"asset_type", "channel"}
+
+
+def _missing(brief: StructuredBrief) -> list[tuple[str, bool]]:
+    """Each Missing Field as (path, is_critical), nested gaps as paths like `budget.currency`."""
+    missing: list[tuple[str, bool]] = []
+    for name, value in brief:
+        critical = name in _CRITICAL_FIELDS
+        if name == "deliverables":
+            if not value:
+                missing.append((name, critical))
+            for i, item in enumerate(value):
+                missing += [
+                    (f"deliverables[{i}].{field}", field in _CRITICAL_DELIVERABLE_FIELDS)
+                    for field, field_value in item
+                    if field_value is None
+                ]
+        elif name == "budget" and value is not None:
+            missing += [(f"budget.{field}", False) for field, v in value if v is None]
+        elif value is None or value == []:
+            missing.append((name, critical))
+    return missing
 
 
 async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) -> IntakeResult:
@@ -61,9 +82,11 @@ async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) 
     if not submissions:
         raise NoValidSubmission(loop_result)
     last = submissions[-1]
+    missing = _missing(last.brief)
     return IntakeResult(
         brief=last.brief,
-        missing_fields=_missing_fields(last.brief),
+        missing_fields=[path for path, _ in missing],
+        critical_missing=any(critical for _, critical in missing),
         ambiguities=last.ambiguities,
         loop_result=loop_result,
     )

@@ -1,4 +1,4 @@
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 
 import pytest
 from anthropic.types import Message
@@ -29,15 +29,20 @@ def fake_client() -> Callable[..., FakeClient]:
 
 @pytest.fixture
 def make_message() -> Callable[..., Message]:
-    """Build an assistant `Message` with the given stop_reason, text and token usage."""
+    """Build an assistant `Message` with the given stop_reason, text, tool calls and token usage.
+
+    Each entry in `tool_uses` is a `{"id", "name", "input"}` dict, emitted as a tool_use block.
+    """
 
     def _make(
         stop_reason: str,
         text: str = "",
         input_tokens: int = 10,
         output_tokens: int = 5,
+        tool_uses: Sequence[dict] = (),
     ) -> Message:
         content = [{"type": "text", "text": text}] if text else []
+        content += [{"type": "tool_use", **tool_use} for tool_use in tool_uses]
         return Message(
             id="msg_test",
             type="message",

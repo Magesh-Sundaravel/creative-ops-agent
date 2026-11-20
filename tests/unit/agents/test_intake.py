@@ -293,6 +293,7 @@ async def test_text_that_is_not_a_brief_gives_an_all_missing_result(fake_client,
     "rule",
     [
         "resolve a date with no year against today's date",
+        "next occurrence on or after today",
         "relative or event-based date",
         "budget range",
         "quoting the Brief",

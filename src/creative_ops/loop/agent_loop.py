@@ -1,16 +1,19 @@
 """Hand-written, stop_reason-driven agent loop (see ADR 0001)."""
 
 import asyncio
+import logging
 from collections.abc import Sequence
 from enum import StrEnum
 from typing import Any
 
 from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from creative_ops.config import get_settings
 from creative_ops.tools.tool import Tool
+
+logger = logging.getLogger(__name__)
 
 
 class StopOutcome(StrEnum):
@@ -91,12 +94,21 @@ async def _call_tool(block: ToolUseBlock, tools_by_name: dict[str, Tool]) -> Too
         return error(f"Unknown tool {block.name!r}. Available tools: {sorted(tools_by_name)}")
     try:
         args = tool.input_model.model_validate(block.input)
+    except ValidationError as exc:
+        # Field and message only: no rejected values or docs URLs echoed back to the model.
+        problems = "; ".join(
+            f"{'.'.join(map(str, e['loc']))}: {e['msg']}" for e in exc.errors(include_url=False)
+        )
+        return error(f"Invalid input for tool {block.name!r}: {problems}")
     except Exception as exc:  # validators may raise more than ValidationError
-        return error(f"Invalid input for tool {block.name!r}: {exc}")
+        return error(f"Invalid input for tool {block.name!r}: {type(exc).__name__}: {exc}")
     try:
         output = await tool.handler(args)
     except Exception as exc:
+        logger.exception("Tool %r raised", block.name)
         return error(f"Tool {block.name!r} failed: {type(exc).__name__}: {exc}")
+    if not isinstance(output, str):
+        return error(f"Tool {block.name!r} returned {type(output).__name__}, expected str")
     return {"type": "tool_result", "tool_use_id": block.id, "content": output}
 
 

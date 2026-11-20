@@ -1,12 +1,13 @@
 import asyncio
 import json
+import logging
 import os
 import subprocess
 import sys
 
 import pytest
 from anthropic import omit
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ValidationError, model_validator
 
 from creative_ops.config import get_settings
 from creative_ops.loop.agent_loop import (
@@ -404,8 +405,10 @@ async def test_run_invalid_tool_input_becomes_error_result_without_calling_handl
     [tool_result] = sent_tool_results(client)
     assert tool_result["tool_use_id"] == "toolu_2"
     assert tool_result["is_error"] is True
-    assert "Invalid input" in tool_result["content"]
-    assert "Input should be a valid integer" in tool_result["content"]
+    with pytest.raises(ValidationError) as expected:
+        AddInput.model_validate(bad_call["input"])
+    [error] = expected.value.errors()
+    assert tool_result["content"] == f"Invalid input for tool 'add': b: {error['msg']}"
 
 
 def make_rendezvous_tool(barrier: asyncio.Barrier) -> Tool:
@@ -500,3 +503,36 @@ async def test_run_validator_raising_non_validation_error_becomes_error_result(
     [tool_result] = sent_tool_results(client)
     assert tool_result["is_error"] is True
     assert "Invalid input" in tool_result["content"]
+
+
+async def test_run_handler_returning_non_str_becomes_error_result(fake_client, make_message):
+    async def forgetful(args: AddInput) -> str:
+        return None  # type: ignore[return-value]
+
+    tool = Tool(name="add", description="Add.", input_model=AddInput, handler=forgetful)
+    client = fake_client(
+        make_message("tool_use", tool_uses=[ADD_CALL]),
+        make_message("end_turn", text="Broken tool."),
+    )
+
+    result = await run(client, "What is 2 + 3?", [tool], model=MODEL)
+
+    assert result.outcome is StopOutcome.COMPLETED
+    [tool_result] = sent_tool_results(client)
+    assert tool_result["is_error"] is True
+    assert "NoneType" in tool_result["content"]
+
+
+async def test_run_handler_exception_logs_traceback(fake_client, make_message, caplog):
+    client = fake_client(
+        make_message("tool_use", tool_uses=[ADD_CALL]),
+        make_message("end_turn", text="The tool failed."),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="creative_ops.loop.agent_loop"):
+        await run(client, "What is 2 + 3?", [make_failing_tool()], model=MODEL)
+
+    [record] = caplog.records
+    assert "add" in record.getMessage()
+    assert record.exc_info is not None
+    assert str(record.exc_info[1]) == "disk on fire"

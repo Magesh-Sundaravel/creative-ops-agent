@@ -115,9 +115,7 @@ async def test_last_valid_submission_in_call_order_wins_within_one_response(
     assert result.brief.brand == "Acme Ltd"
 
 
-async def test_missing_fields_lists_top_level_fields_the_brief_does_not_give(
-    fake_client, make_message
-):
+async def test_missing_fields_lists_every_field_the_brief_does_not_give(fake_client, make_message):
     client = fake_client(
         make_message(
             "tool_use",
@@ -145,6 +143,10 @@ async def test_missing_fields_lists_top_level_fields_the_brief_does_not_give(
         "target_audience",
         "key_message",
         "usage_rights",
+        "deliverables[0].channel",
+        "deliverables[0].format_or_dimensions",
+        "deliverables[0].quantity",
+        "deliverables[0].due_date",
         "references",
         "budget",
     ]
@@ -166,3 +168,97 @@ async def test_today_defaults_to_the_real_date(fake_client, make_message):
         await intake(client, BRIEF)
 
     assert date.today().isoformat() in client.messages.calls[0]["system"]
+
+
+COMPLETE = {
+    "brand": "Acme",
+    "objective": "Awareness",
+    "deadline": "2026-11-15",
+    "deliverables": [{"asset_type": "reel", "channel": "Instagram"}],
+}
+
+
+async def submit_and_intake(fake_client, make_message, brief: dict):
+    client = fake_client(
+        make_message("tool_use", tool_uses=[submit("t1", brief)]), make_message("end_turn")
+    )
+    return await intake(client, BRIEF)
+
+
+async def test_nested_gaps_are_reported_as_paths(fake_client, make_message):
+    brief = {
+        **COMPLETE,
+        "deliverables": [
+            {"asset_type": "reel", "channel": "Instagram", "quantity": 2},
+            {"asset_type": "still"},
+        ],
+        "budget": {"amount": "40000"},
+    }
+
+    result = await submit_and_intake(fake_client, make_message, brief)
+
+    assert "budget.currency" in result.missing_fields
+    assert "budget.amount" not in result.missing_fields
+    assert "deliverables[0].quantity" not in result.missing_fields
+    assert "deliverables[0].format_or_dimensions" in result.missing_fields
+    assert "deliverables[1].channel" in result.missing_fields
+    assert "deliverables[1].quantity" in result.missing_fields
+
+
+async def test_empty_deliverables_is_reported_as_deliverables(fake_client, make_message):
+    result = await submit_and_intake(fake_client, make_message, {**COMPLETE, "deliverables": []})
+
+    assert "deliverables" in result.missing_fields
+
+
+async def test_complete_critical_fields_do_not_set_critical_missing(fake_client, make_message):
+    result = await submit_and_intake(fake_client, make_message, COMPLETE)
+
+    assert result.missing_fields  # non-critical gaps are still listed
+    assert result.critical_missing is False
+
+
+@pytest.mark.parametrize(
+    "brief",
+    [
+        {**COMPLETE, "brand": None},
+        {**COMPLETE, "objective": None},
+        {**COMPLETE, "deadline": None},
+        {**COMPLETE, "deliverables": []},
+        {**COMPLETE, "deliverables": [{"channel": "Instagram"}]},
+        {**COMPLETE, "deliverables": [{"asset_type": "reel"}]},
+    ],
+    ids=["brand", "objective", "deadline", "no-deliverables", "asset_type", "channel"],
+)
+async def test_missing_critical_field_sets_critical_missing(fake_client, make_message, brief):
+    result = await submit_and_intake(fake_client, make_message, brief)
+
+    assert result.critical_missing is True
+
+
+async def test_missing_deliverable_due_date_is_not_critical(fake_client, make_message):
+    result = await submit_and_intake(fake_client, make_message, COMPLETE)
+
+    assert "deliverables[0].due_date" in result.missing_fields
+    assert result.critical_missing is False
+
+
+async def test_blank_strings_count_as_missing(fake_client, make_message):
+    brief = {
+        **COMPLETE,
+        "objective": "   ",
+        "campaign_name": "",
+        "deliverables": [{"asset_type": "reel", "channel": ""}],
+        "budget": {"amount": "40000", "currency": " "},
+    }
+
+    result = await submit_and_intake(fake_client, make_message, brief)
+
+    assert result.brief.objective is None
+    assert {
+        "objective",
+        "campaign_name",
+        "deliverables[0].channel",
+        "budget.currency",
+    } <= set(result.missing_fields)
+    assert result.critical_missing is True

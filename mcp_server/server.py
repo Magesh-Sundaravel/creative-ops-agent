@@ -3,8 +3,9 @@
 import json
 import sys
 import time
+from datetime import date
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, get_args
 
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceNotFoundError
@@ -12,7 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SDKToolError
 from mcp.types import CallToolResult, InputRequiredResult, TextContent
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from mcp_server.models import Asset, AssetList, Brand, ToolError
+from mcp_server.models import Asset, AssetList, Brand, Task, TaskStatus, ToolError
 
 SEED_DIR = Path(__file__).parent / "seed"
 
@@ -87,6 +88,14 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
     for asset in assets.values():
         if asset.brand not in brand_slugs:
             raise ValueError(f"Seed Asset {asset.id} has unknown brand {asset.brand!r}")
+    tasks: dict[str, Task] = {}
+    for task in _load(seed_dir / "tasks.json", Task):
+        if task.id in tasks:
+            raise ValueError(f"Seed Tasks share the id {task.id!r}")
+        if task.brand not in brand_slugs:
+            raise ValueError(f"Seed Task {task.id} has unknown brand {task.brand!r}")
+        tasks[task.id] = task
+    next_task_number = max((int(task_id.removeprefix("TSK-")) for task_id in tasks), default=0) + 1
 
     server = _ClientStack("client_stack")
 
@@ -150,6 +159,74 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
             if all(getattr(asset, field).casefold() == value for field, value in wanted.items())
         ]
         return _ok(AssetList(assets=found))
+
+    @server.tool()
+    async def tracker_create_task(
+        title: str,
+        brand: str,
+        campaign_name: str,
+        description: str,
+        due_date: date | None = None,
+    ) -> Annotated[CallToolResult, Task]:
+        """Create a Task in the project tracker. It always starts with status "briefed".
+
+        The tracker assigns the Task id; it is in the returned Task. Use
+        `tracker_update_status` to move the Task on afterwards.
+
+        Args:
+            title: Short name for the work, e.g. "Spring Linen Edit: Instagram feed set".
+            brand: Brand slug, e.g. "loomhouse", matched ignoring case. Must be a known brand.
+            campaign_name: Campaign the work belongs to, e.g. "Spring Linen Edit".
+            description: What production has to make.
+            due_date: Optional due date, ISO format (YYYY-MM-DD).
+        """
+        nonlocal next_task_number
+        if brand.casefold() not in brand_slugs:
+            return _error(
+                "not_found",
+                f"No brand with slug {brand!r}. Known brands: {', '.join(sorted(brand_slugs))}.",
+                brand=brand,
+            )
+        task = Task(
+            id=f"TSK-{next_task_number:03d}",
+            title=title,
+            brand=brand.casefold(),
+            campaign_name=campaign_name,
+            description=description,
+            due_date=due_date,
+            status="briefed",
+        )
+        next_task_number += 1
+        tasks[task.id] = task
+        return _ok(task)
+
+    @server.tool()
+    async def tracker_update_status(task_id: str, status: str) -> Annotated[CallToolResult, Task]:
+        """Set a Task's status in the project tracker and return the updated Task.
+
+        Any status may follow any other. The status is matched ignoring case.
+
+        Args:
+            task_id: The Task id, e.g. "TSK-001".
+            status: One of "briefed", "in_production", "in_review", "revisions_requested",
+                "approved" or "delivered".
+        """
+        if task_id not in tasks:
+            return _error(
+                "not_found",
+                f"No Task with id {task_id!r}. Check the id returned by tracker_create_task.",
+                task_id=task_id,
+            )
+        valid_statuses = list(get_args(TaskStatus))
+        if status.casefold() not in valid_statuses:
+            return _error(
+                "invalid_input",
+                f"Invalid status {status!r}. Valid statuses: {', '.join(valid_statuses)}.",
+                status=status,
+                valid_statuses=valid_statuses,
+            )
+        tasks[task_id] = tasks[task_id].model_copy(update={"status": status.casefold()})
+        return _ok(tasks[task_id])
 
     @server.resource("brand://brands", mime_type="application/json")
     async def list_brands() -> str:

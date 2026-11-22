@@ -1,0 +1,29 @@
+[
+  {
+    "id": "TSK-001",
+    "title": "Spring Linen Edit: Instagram feed set",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "description": "Six 4:5 feed images for the linen womenswear launch.",
+    "due_date": "2031-02-14",
+    "status": "in_production"
+  },
+  {
+    "id": "TSK-002",
+    "title": "City Miles: TikTok launch cut",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "description": "15-second vertical video for the City Miles running shoe launch.",
+    "due_date": "2031-03-01",
+    "status": "in_review"
+  },
+  {
+    "id": "TSK-003",
+    "title": "Dew Ritual: website hero",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "description": "Homepage hero banner for the Dew Ritual serum.",
+    "due_date": null,
+    "status": "briefed"
+  }
+]

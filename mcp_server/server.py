@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ResourceNotFoundError
 from mcp.server.mcpserver.exceptions import ToolError as SDKToolError
 from mcp.types import CallToolResult, InputRequiredResult, TextContent
 from pydantic import BaseModel, TypeAdapter, ValidationError
@@ -80,7 +81,8 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
 
     Raises if the seed fails validation, so bad seed data stops the server from starting.
     """
-    brand_slugs = {brand.slug for brand in _load(seed_dir / "brands.json", Brand)}
+    brands = {brand.slug: brand for brand in _load(seed_dir / "brands.json", Brand)}
+    brand_slugs = brands.keys()
     assets = {asset.id: asset for asset in _load(seed_dir / "assets.json", Asset)}
     for asset in assets.values():
         if asset.brand not in brand_slugs:
@@ -148,5 +150,28 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
             if all(getattr(asset, field).casefold() == value for field, value in wanted.items())
         ]
         return _ok(AssetList(assets=found))
+
+    @server.resource("brand://brands", mime_type="application/json")
+    async def list_brands() -> str:
+        """Every known brand's slug and display name.
+
+        Use it to map a brand name from a Brief to the slug the other tools and resources take.
+        """
+        return json.dumps(
+            [brand.model_dump(include={"slug", "display_name"}) for brand in brands.values()]
+        )
+
+    @server.resource("brand://guidelines/{brand}", mime_type="application/json")
+    async def brand_guidelines(brand: str) -> str:
+        """A brand's Brand Guidelines: palette, typography, logo rules, tone of voice, do's,
+        don'ts, mandatory legal lines and approved channels.
+
+        `brand` is the brand slug, e.g. "loomhouse". List the slugs with `brand://brands`.
+        """
+        if brand not in brands:
+            raise ResourceNotFoundError(
+                f"No brand with slug {brand!r}. Known brands: {', '.join(sorted(brand_slugs))}."
+            )
+        return brands[brand].guidelines.model_dump_json()
 
     return server

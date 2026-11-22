@@ -3,7 +3,34 @@
 from datetime import date
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class PaletteColour(BaseModel):
+    """One named colour in a brand's palette."""
+
+    name: str
+    hex: str = Field(pattern=r"^#[0-9A-F]{6}$")
+
+
+class Typography(BaseModel):
+    """The typefaces a brand uses for headings and body copy."""
+
+    heading: str
+    body: str
+
+
+class BrandGuidelines(BaseModel):
+    """A brand's rules for how its creative work must look and sound."""
+
+    palette: list[PaletteColour]
+    typography: Typography
+    logo_rules: list[str]
+    tone_of_voice: str
+    dos: list[str]
+    donts: list[str]
+    mandatory_legal_lines: list[str]
+    approved_channels: list[str]
 
 
 class Brand(BaseModel):
@@ -11,6 +38,7 @@ class Brand(BaseModel):
 
     slug: str
     display_name: str
+    guidelines: BrandGuidelines
 
 
 class UsageRights(BaseModel):

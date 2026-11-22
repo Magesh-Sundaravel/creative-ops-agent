@@ -35,3 +35,21 @@ _Avoid_: Required field, mandatory field
 **Ambiguity**:
 Something the Brief does say but that is unclear or contradicts itself, such as two different deadlines.
 _Avoid_: Note, concern, warning
+
+### Client stack
+
+**Asset**:
+A finished or in-progress piece of creative work held in the DAM, described by its metadata only.
+_Avoid_: File, creative, artwork
+
+**Usage Rights**:
+The territories, channels and time period in which an Asset may be published.
+_Avoid_: License, permissions, clearance
+
+**Brand Guidelines**:
+A brand's rules for how its creative work must look and sound, such as palette, typography, logo use, tone and mandatory legal lines.
+_Avoid_: Brand book, style guide, brand rules
+
+**Task**:
+A unit of agency work tracked in the project tracker, moving through a fixed set of statuses until it is delivered.
+_Avoid_: Ticket, job, card

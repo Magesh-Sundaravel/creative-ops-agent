@@ -1,0 +1,50 @@
+[
+  {
+    "id": "AST-001",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "loomhouse_spring-linen_ig-feed_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["instagram", "facebook"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "womenswear", "outdoor"]
+  },
+  {
+    "id": "AST-002",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "video",
+    "channel": "tiktok",
+    "format_or_dimensions": "1080x1920",
+    "file_name": "stridewell_city-miles_tiktok_15s.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["tiktok", "instagram"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "urban", "15s"]
+  },
+  {
+    "id": "AST-003",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "image",
+    "channel": "website",
+    "format_or_dimensions": "2400x1200",
+    "file_name": "verdant-skin_dew-ritual_hero.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["website", "email"],
+      "expires_on": "2032-06-30"
+    },
+    "tags": ["skincare", "serum", "hero"]
+  }
+]

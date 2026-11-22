@@ -31,9 +31,9 @@ Streamlit UI ──> FastAPI ──> Coordinator agent
                                   └── Handoff  (handoff package for production)
                                           │
                                    MCP server (mock client stack)
-                                   ├── tools:     dam.search_assets, dam.get_asset,
-                                   │              tracker.create_task, tracker.update_status
-                                   └── resources: brand://guidelines/{brand}, brief://templates
+                                   ├── tools:     dam_search_assets, dam_get_asset,
+                                   │              tracker_create_task, tracker_update_status
+                                   └── resources: brand://brands, brand://guidelines/{brand}
 ```
 
 Flow: raw brief → intake (validated `StructuredBrief`, gaps flagged) → human gate if critical

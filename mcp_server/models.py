@@ -36,6 +36,12 @@ class Asset(BaseModel):
     tags: list[str]
 
 
+class AssetList(BaseModel):
+    """The Assets a DAM search found, possibly none."""
+
+    assets: list[Asset]
+
+
 class ToolError(BaseModel):
     """What a tool returns instead of a result when it can't do what was asked."""
 

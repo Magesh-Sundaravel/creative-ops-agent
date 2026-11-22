@@ -11,7 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError as SDKToolError
 from mcp.types import CallToolResult, InputRequiredResult, TextContent
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-from mcp_server.models import Asset, Brand, ToolError
+from mcp_server.models import Asset, AssetList, Brand, ToolError
 
 SEED_DIR = Path(__file__).parent / "seed"
 
@@ -106,5 +106,47 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
                 asset_id=asset_id,
             )
         return _ok(assets[asset_id])
+
+    @server.tool()
+    async def dam_search_assets(
+        brand: str | None = None,
+        campaign_name: str | None = None,
+        asset_type: str | None = None,
+        channel: str | None = None,
+        status: str | None = None,
+    ) -> Annotated[CallToolResult, AssetList]:
+        """Find Assets in the DAM by metadata. Every filter is optional.
+
+        Filters are exact matches ignoring case, combined with AND. No filters returns every
+        Asset, and a search that matches nothing returns an empty list. There is no free-text
+        query. Use `dam_get_asset` to fetch one Asset whose id you already know.
+
+        Args:
+            brand: Brand slug, e.g. "loomhouse". Must be a known brand.
+            campaign_name: Campaign name, e.g. "Spring Linen Edit".
+            asset_type: e.g. "image" or "video".
+            channel: e.g. "instagram", "tiktok" or "website".
+            status: "draft" or "final".
+        """
+        if brand is not None and brand.casefold() not in brand_slugs:
+            return _error(
+                "not_found",
+                f"No brand with slug {brand!r}. Known brands: {', '.join(sorted(brand_slugs))}.",
+                brand=brand,
+            )
+        filters = {
+            "brand": brand,
+            "campaign_name": campaign_name,
+            "asset_type": asset_type,
+            "channel": channel,
+            "status": status,
+        }
+        wanted = {field: value.casefold() for field, value in filters.items() if value is not None}
+        found = [
+            asset
+            for asset in assets.values()
+            if all(getattr(asset, field).casefold() == value for field, value in wanted.items())
+        ]
+        return _ok(AssetList(assets=found))
 
     return server

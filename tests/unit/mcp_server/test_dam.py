@@ -58,3 +58,88 @@ async def test_get_asset_bad_arguments_returns_invalid_input_tool_error(connect,
     assert error["retryable"] is False
     assert "asset_id" in error["message"]
     assert [e["field"] for e in error["details"]["errors"]] == ["asset_id"]
+
+
+async def _search(client, **filters):
+    result = await client.call_tool("dam_search_assets", filters)
+    assert not result.is_error
+    return result.structured_content["assets"]
+
+
+async def test_search_no_filters_returns_every_asset(connect):
+    async with connect() as client:
+        assets = await _search(client)
+
+    assert {a["id"] for a in assets} == {"AST-001", "AST-002", "AST-003"}
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("brand", "loomhouse"),
+        ("campaign_name", "City Miles"),
+        ("asset_type", "image"),
+        ("channel", "website"),
+        ("status", "final"),
+    ],
+)
+async def test_search_single_filter_returns_only_matching_assets(connect, field, value):
+    async with connect() as client:
+        assets = await _search(client, **{field: value})
+
+    assert assets
+    assert all(a[field] == value for a in assets)
+
+
+async def test_search_single_filter_narrows_results(connect):
+    async with connect() as client:
+        everything = await _search(client)
+        images = await _search(client, asset_type="image")
+
+    assert 0 < len(images) < len(everything)
+
+
+async def test_search_filters_combine_with_and(connect):
+    async with connect() as client:
+        both = await _search(client, asset_type="image", channel="instagram")
+        clash = await _search(client, brand="loomhouse", channel="tiktok")
+
+    assert [a["id"] for a in both] == ["AST-001"]
+    assert clash == []
+
+
+async def test_search_matching_ignores_case(connect):
+    async with connect() as client:
+        lower = await _search(client, brand="loomhouse", channel="instagram")
+        mixed = await _search(client, brand="LoomHouse", channel="Instagram")
+
+    assert lower
+    assert mixed == lower
+
+
+async def test_search_no_match_returns_empty_list(connect):
+    async with connect() as client:
+        assets = await _search(client, status="draft", campaign_name="No Such Campaign")
+
+    assert assets == []
+
+
+async def test_search_unknown_brand_returns_not_found_tool_error(connect):
+    async with connect() as client:
+        result = await client.call_tool("dam_search_assets", {"brand": "loomhous"})
+
+    assert result.is_error
+    error = json.loads(result.content[0].text)
+    assert error["type"] == "not_found"
+    assert error["retryable"] is False
+    assert "loomhous" in error["message"]
+    assert error["details"] == {"brand": "loomhous"}
+
+
+async def test_search_listed_tool_has_output_schema(connect):
+    async with connect() as client:
+        tools = await client.list_tools()
+
+    [tool] = [t for t in tools.tools if t.name == "dam_search_assets"]
+    assert tool.output_schema is not None
+    assert "assets" in tool.output_schema["properties"]

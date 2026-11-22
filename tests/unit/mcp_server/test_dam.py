@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 
 async def test_get_asset_known_id_returns_asset_as_structured_content(connect):
     async with connect() as client:
@@ -43,3 +45,16 @@ async def test_get_asset_unknown_id_returns_not_found_tool_error(connect):
     assert error["retryable"] is False
     assert "AST-999" in error["message"]
     assert error["details"] == {"asset_id": "AST-999"}
+
+
+@pytest.mark.parametrize("arguments", [{}, {"asset_id": 5}])
+async def test_get_asset_bad_arguments_returns_invalid_input_tool_error(connect, arguments):
+    async with connect() as client:
+        result = await client.call_tool("dam_get_asset", arguments)
+
+    assert result.is_error
+    error = json.loads(result.content[0].text)
+    assert error["type"] == "invalid_input"
+    assert error["retryable"] is False
+    assert "asset_id" in error["message"]
+    assert [e["field"] for e in error["details"]["errors"]] == ["asset_id"]

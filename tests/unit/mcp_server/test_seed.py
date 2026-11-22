@@ -43,3 +43,43 @@ def test_build_server_invalid_seed_guidelines_raises(tmp_path):
 
     with pytest.raises(ValidationError):
         build_server(tmp_path)
+
+
+def test_build_server_invalid_seed_task_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    tasks = json.loads((tmp_path / "tasks.json").read_text())
+    tasks[0]["status"] = "done"
+    (tmp_path / "tasks.json").write_text(json.dumps(tasks))
+
+    with pytest.raises(ValidationError):
+        build_server(tmp_path)
+
+
+def test_build_server_seed_task_with_unknown_brand_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    tasks = json.loads((tmp_path / "tasks.json").read_text())
+    tasks[0]["brand"] = "verdant_skin"
+    (tmp_path / "tasks.json").write_text(json.dumps(tasks))
+
+    with pytest.raises(ValueError, match="verdant_skin"):
+        build_server(tmp_path)
+
+
+def test_build_server_seed_task_with_malformed_id_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    tasks = json.loads((tmp_path / "tasks.json").read_text())
+    tasks[0]["id"] = "TSK-01a"
+    (tmp_path / "tasks.json").write_text(json.dumps(tasks))
+
+    with pytest.raises(ValidationError, match="TSK-01a"):
+        build_server(tmp_path)
+
+
+def test_build_server_seed_tasks_with_duplicate_id_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    tasks = json.loads((tmp_path / "tasks.json").read_text())
+    tasks[1]["id"] = tasks[0]["id"]
+    (tmp_path / "tasks.json").write_text(json.dumps(tasks))
+
+    with pytest.raises(ValueError, match=tasks[0]["id"]):
+        build_server(tmp_path)

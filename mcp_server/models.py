@@ -70,6 +70,23 @@ class AssetList(BaseModel):
     assets: list[Asset]
 
 
+TaskStatus = Literal[
+    "briefed", "in_production", "in_review", "revisions_requested", "approved", "delivered"
+]
+
+
+class Task(BaseModel):
+    """A unit of agency work tracked in the project tracker."""
+
+    id: str = Field(pattern=r"^TSK-\d+$")
+    title: str
+    brand: str
+    campaign_name: str
+    description: str
+    due_date: date | None
+    status: TaskStatus
+
+
 class ToolError(BaseModel):
     """What a tool returns instead of a result when it can't do what was asked."""
 

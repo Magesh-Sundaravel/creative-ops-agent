@@ -1,5 +1,95 @@
 [
-  {"slug": "loomhouse", "display_name": "Loomhouse"},
-  {"slug": "stridewell", "display_name": "Stridewell"},
-  {"slug": "verdant-skin", "display_name": "Verdant Skin"}
+  {
+    "slug": "loomhouse",
+    "display_name": "Loomhouse",
+    "guidelines": {
+      "palette": [
+        {"name": "Oat", "hex": "#E8DCC4"},
+        {"name": "Flax", "hex": "#C9B48A"},
+        {"name": "Charcoal", "hex": "#2F2F2F"}
+      ],
+      "typography": {"heading": "Canela", "body": "Söhne"},
+      "logo_rules": [
+        "Use the wordmark in Charcoal on light backgrounds, Oat on dark",
+        "Keep clear space equal to the height of the 'L' on all sides",
+        "Never stretch, recolour or add effects to the wordmark"
+      ],
+      "tone_of_voice": "Calm, tactile and unhurried. Speaks about materials and craft, never about trends.",
+      "dos": [
+        "Shoot in natural light",
+        "Show fabric texture up close",
+        "Name the fibre in the copy (linen, wool, cotton)"
+      ],
+      "donts": [
+        "No discount-led headlines",
+        "No heavy retouching of skin or fabric",
+        "No saturated or neon colours"
+      ],
+      "mandatory_legal_lines": ["Loomhouse is a trading name of Loomhouse Ltd."],
+      "approved_channels": ["instagram", "facebook", "website", "email"]
+    }
+  },
+  {
+    "slug": "stridewell",
+    "display_name": "Stridewell",
+    "guidelines": {
+      "palette": [
+        {"name": "Signal Orange", "hex": "#FF5A1F"},
+        {"name": "Asphalt", "hex": "#1C1C1E"},
+        {"name": "Chalk", "hex": "#F4F4F2"}
+      ],
+      "typography": {"heading": "Druk Wide", "body": "Inter"},
+      "logo_rules": [
+        "Use the stride mark with the wordmark except on product, where the mark stands alone",
+        "Minimum size 24px tall on screen",
+        "Never place the logo over busy crowd shots"
+      ],
+      "tone_of_voice": "Direct, energetic and encouraging. Short sentences, active verbs, talks to every runner not just athletes.",
+      "dos": [
+        "Show real runners in real city streets",
+        "Lead with movement in the first second of video",
+        "Credit the shoe model by name"
+      ],
+      "donts": [
+        "No performance claims without a source",
+        "No shaming language about bodies or pace",
+        "No competitor products in frame"
+      ],
+      "mandatory_legal_lines": ["Performance results vary by runner."],
+      "approved_channels": ["tiktok", "instagram", "youtube", "website"]
+    }
+  },
+  {
+    "slug": "verdant-skin",
+    "display_name": "Verdant Skin",
+    "guidelines": {
+      "palette": [
+        {"name": "Fern", "hex": "#4F7942"},
+        {"name": "Dew", "hex": "#EAF4EC"},
+        {"name": "Clay", "hex": "#B5735A"}
+      ],
+      "typography": {"heading": "Recoleta", "body": "Lato"},
+      "logo_rules": [
+        "Use the leaf mark in Fern or white only",
+        "Keep the logo in the top or bottom left corner",
+        "Never crop the leaf mark"
+      ],
+      "tone_of_voice": "Warm, clear and science-backed. Explains ingredients simply and never overpromises.",
+      "dos": [
+        "Show skin as it is, with texture",
+        "Name the hero ingredient",
+        "Include the product on a natural surface"
+      ],
+      "donts": [
+        "No before-and-after images",
+        "No medical claims such as 'cures' or 'treats'",
+        "No filters that smooth skin"
+      ],
+      "mandatory_legal_lines": [
+        "Dermatologically tested.",
+        "Individual results may vary."
+      ],
+      "approved_channels": ["website", "email", "instagram", "pinterest"]
+    }
+  }
 ]

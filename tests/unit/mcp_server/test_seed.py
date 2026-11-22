@@ -33,3 +33,13 @@ def test_build_server_seed_asset_with_unknown_brand_raises(tmp_path):
 
     with pytest.raises(ValueError, match="verdant_skin"):
         build_server(tmp_path)
+
+
+def test_build_server_invalid_seed_guidelines_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    brands = json.loads((tmp_path / "brands.json").read_text())
+    brands[0]["guidelines"]["palette"][0]["hex"] = "oat"
+    (tmp_path / "brands.json").write_text(json.dumps(brands))
+
+    with pytest.raises(ValidationError):
+        build_server(tmp_path)

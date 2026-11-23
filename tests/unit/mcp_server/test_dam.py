@@ -70,7 +70,7 @@ async def test_search_no_filters_returns_every_asset(connect):
     async with connect() as client:
         assets = await _search(client)
 
-    assert {a["id"] for a in assets} == {"AST-001", "AST-002", "AST-003"}
+    assert {a["id"] for a in assets} == {f"AST-{n:03d}" for n in range(1, 21)}
 
 
 @pytest.mark.parametrize(
@@ -101,10 +101,10 @@ async def test_search_single_filter_narrows_results(connect):
 
 async def test_search_filters_combine_with_and(connect):
     async with connect() as client:
-        both = await _search(client, asset_type="image", channel="instagram")
+        both = await _search(client, brand="verdant-skin", channel="instagram")
         clash = await _search(client, brand="loomhouse", channel="tiktok")
 
-    assert [a["id"] for a in both] == ["AST-001"]
+    assert [a["id"] for a in both] == ["AST-016", "AST-020"]
     assert clash == []
 
 

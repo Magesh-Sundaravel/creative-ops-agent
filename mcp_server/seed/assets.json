@@ -46,5 +46,277 @@
       "expires_on": "2032-06-30"
     },
     "tags": ["skincare", "serum", "hero"]
+  },
+  {
+    "id": "AST-004",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "loomhouse_spring-linen_ig-feed_02.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["instagram", "facebook"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "menswear", "studio"]
+  },
+  {
+    "id": "AST-005",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1920",
+    "file_name": "loomhouse_spring-linen_ig-story_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["instagram", "facebook"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "womenswear", "story"]
+  },
+  {
+    "id": "AST-006",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "website",
+    "format_or_dimensions": "2400x1200",
+    "file_name": "loomhouse_spring-linen_hero.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["website", "email"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "hero", "texture"]
+  },
+  {
+    "id": "AST-007",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "email",
+    "format_or_dimensions": "1200x600",
+    "file_name": "loomhouse_spring-linen_email-header.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["email", "website"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "email", "texture"]
+  },
+  {
+    "id": "AST-008",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "video",
+    "channel": "facebook",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "loomhouse_spring-linen_fb-feed_20s.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["facebook", "instagram"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "craft", "20s"]
+  },
+  {
+    "id": "AST-009",
+    "brand": "loomhouse",
+    "campaign_name": "Spring Linen Edit",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "loomhouse_spring-linen_ig-feed_03_draft.jpg",
+    "status": "draft",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["instagram", "facebook"],
+      "expires_on": "2031-03-31"
+    },
+    "tags": ["linen", "womenswear", "outdoor"]
+  },
+  {
+    "id": "AST-010",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "video",
+    "channel": "tiktok",
+    "format_or_dimensions": "1080x1920",
+    "file_name": "stridewell_city-miles_tiktok_30s.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["tiktok", "instagram"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "urban", "30s"]
+  },
+  {
+    "id": "AST-011",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "video",
+    "channel": "youtube",
+    "format_or_dimensions": "1920x1080",
+    "file_name": "stridewell_city-miles_youtube_60s.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["youtube", "website"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "urban", "60s"]
+  },
+  {
+    "id": "AST-012",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "stridewell_city-miles_ig-feed_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["instagram", "tiktok"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "shoe", "product"]
+  },
+  {
+    "id": "AST-013",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "image",
+    "channel": "website",
+    "format_or_dimensions": "2400x1200",
+    "file_name": "stridewell_city-miles_hero.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["website"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "hero", "urban"]
+  },
+  {
+    "id": "AST-014",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "video",
+    "channel": "tiktok",
+    "format_or_dimensions": "1920x1080",
+    "file_name": "stridewell_city-miles_tiktok_15s_v2.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["US", "CA"],
+      "channels": ["tiktok", "instagram"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "urban", "15s"]
+  },
+  {
+    "id": "AST-015",
+    "brand": "stridewell",
+    "campaign_name": "City Miles",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "stridewell_city-miles_ig-feed_02.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["JP"],
+      "channels": ["instagram", "tiktok"],
+      "expires_on": "2030-12-31"
+    },
+    "tags": ["running", "night", "urban"]
+  },
+  {
+    "id": "AST-016",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "verdant-skin_dew-ritual_ig-feed_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["instagram", "pinterest"],
+      "expires_on": "2032-06-30"
+    },
+    "tags": ["skincare", "serum", "texture"]
+  },
+  {
+    "id": "AST-017",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "image",
+    "channel": "pinterest",
+    "format_or_dimensions": "1000x1500",
+    "file_name": "verdant-skin_dew-ritual_pin_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["pinterest", "instagram"],
+      "expires_on": "2032-06-30"
+    },
+    "tags": ["skincare", "serum", "ingredient"]
+  },
+  {
+    "id": "AST-018",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "image",
+    "channel": "email",
+    "format_or_dimensions": "1200x600",
+    "file_name": "verdant-skin_dew-ritual_email-header.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["email", "website"],
+      "expires_on": "2032-06-30"
+    },
+    "tags": ["skincare", "serum", "email"]
+  },
+  {
+    "id": "AST-019",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "video",
+    "channel": "tiktok",
+    "format_or_dimensions": "1080x1920",
+    "file_name": "verdant-skin_dew-ritual_tiktok_15s.mp4",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["tiktok"],
+      "expires_on": "2032-06-30"
+    },
+    "tags": ["skincare", "routine", "15s"]
+  },
+  {
+    "id": "AST-020",
+    "brand": "verdant-skin",
+    "campaign_name": "Dew Ritual",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1920",
+    "file_name": "verdant-skin_dew-ritual_ig-story_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["global"],
+      "channels": ["instagram", "pinterest"],
+      "expires_on": "2025-06-30"
+    },
+    "tags": ["skincare", "serum", "story"]
   }
 ]

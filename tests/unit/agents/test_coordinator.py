@@ -13,6 +13,7 @@ from creative_ops.agents.coordinator import (
     Acknowledge,
     Amend,
     AnswerDoesNotFit,
+    ConfirmTask,
     CoordinatorState,
     Retry,
     coordinate,
@@ -827,8 +828,14 @@ async def test_resume_with_acknowledge_closes_campaign_as_revisions_requested_wi
         (CAMPAIGN, [BLOCKING], Amend(text="Due 1 March 2031.")),
         ({**CAMPAIGN, "deadline": None}, [], Acknowledge()),
         ({**CAMPAIGN, "deadline": None}, [], Retry()),
+        ({**CAMPAIGN, "deadline": None}, [], ConfirmTask(**KEY, task_exists=True)),
     ],
-    ids=["amend-on-revisions-requested", "acknowledge-on-missing-field", "retry-on-missing-field"],
+    ids=[
+        "amend-on-revisions-requested",
+        "acknowledge-on-missing-field",
+        "retry-on-missing-field",
+        "confirm-task-on-missing-field",
+    ],
 )
 async def test_resume_with_an_answer_that_does_not_fit_the_escalation_is_rejected(
     connect_without_flaws, routing_client, script, brief_campaign, review_findings, answer
@@ -972,7 +979,7 @@ async def test_resume_with_amend_duplicating_a_closed_key_keeps_that_campaign_cl
     assert [c["revisions_requested"] for c in linens] == [True, True]
     review_denied, handoff_denied = calls[5]["messages"][-1]["content"]
     for denied, message in (
-        (review_denied, "This campaign is closed: revisions requested."),
+        (review_denied, "This campaign is closed."),
         (handoff_denied, "This campaign is escalated to a human, or closed."),
     ):
         assert denied["is_error"] is True
@@ -1101,12 +1108,13 @@ async def test_coordinate_handoff_failing_after_creating_a_task_escalates_withou
     [outcome] = result.campaigns
     [failed] = result.failed_runs
     created = json.loads(failed.messages[2]["content"][0]["content"])  # the create's result
-    assert outcome.escalation.reason == "run_failed"
-    assert outcome.escalation.answer == "retry"
+    assert outcome.escalation.reason == "task_may_exist"
+    assert outcome.escalation.answer == "confirm_task"
     assert outcome.escalation.needs == [
         f"Handoff failed (HandoffIncomplete) after creating tracker Task {created['id']}. "
-        "Check that Task before retrying."
+        "Check that Task, then confirm whether it exists."
     ]
+    assert outcome.task_id == created["id"]
     assert recorded.names.count("tracker_create_task") == 1
 
 
@@ -1202,10 +1210,229 @@ async def test_coordinate_handoff_whose_create_was_rejected_is_retried_only_if_n
         assert outcome.handoff is not None
         assert recorded.names.count("tracker_create_task") == 1  # the retry's create only
     else:
-        assert (outcome.escalation.reason, outcome.escalation.answer) == ("run_failed", "retry")
+        assert (outcome.escalation.reason, outcome.escalation.answer) == (
+            "task_may_exist",
+            "confirm_task",
+        )
         assert recorded.names.count("tracker_create_task") == 0  # rejected before the server
         assert outcome.escalation.needs == [
             "Handoff failed (HandoffIncomplete) after trying to create a tracker Task. "
-            "Check the tracker for that Task before retrying."
+            "Check the tracker for that Task, then confirm whether it exists."
         ]
         assert len(client.messages.calls[HANDOFF]) == 2  # one Handoff Run, not retried
+
+
+def created_only(make_message) -> list:
+    """A Handoff Run that creates a Task, then ends without submitting."""
+    return [
+        make_message(
+            "tool_use",
+            tool_uses=[call("h1", "tracker_create_task", {"title": "T", "description": "D"})],
+        ),
+        make_message("end_turn", text="Forgot to submit."),
+    ]
+
+
+async def test_resume_with_retry_never_hands_off_again_a_campaign_whose_task_may_exist(
+    connect_without_flaws, make_message, script
+):
+    both_reviews = [call("c2", "review", KEY), call("c3", "review", KEY_2)]
+    no_review = make_message("end_turn", text="No review.")
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message, [call("c1", "intake")], both_reviews, [call("c4", "handoff", KEY)]
+                ),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    both_reviews,
+                    [call("c4", "handoff", KEY), call("c5", "handoff", KEY_2)],
+                ),
+            ],
+            (INTAKE, None): [*script.intake(CAMPAIGN, CAMPAIGN_2)] * 2,
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            # Fails twice, so City Miles escalates accepting retry.
+            (REVIEW, "City Miles"): [no_review, no_review, *review_of(make_message, "AST-002")],
+            (HANDOFF, "Spring Linen Edit"): created_only(make_message),
+            (HANDOFF, "City Miles"): script.handoff(),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, recorded, state, Retry(), TODAY)
+
+    assert [e.reason for e in escalated.state.escalations] == ["task_may_exist", "run_failed"]
+    linen, miles = result.campaigns
+    assert linen.escalation == escalated.campaigns[0].escalation
+    assert linen.handoff is None
+    assert miles.handoff is not None
+    assert recorded.names.count("tracker_create_task") == 2  # Linen's first, then Miles's
+    assert result.state.escalations == [linen.escalation]
+
+
+def tool_result(coordinator_call: dict, tool_use_id: str) -> dict:
+    """The tool_result for `tool_use_id` in the history one Coordinator call was sent."""
+    return next(
+        block
+        for message in coordinator_call["messages"]
+        if message["role"] == "user" and isinstance(message["content"], list)
+        for block in message["content"]
+        if block.get("tool_use_id") == tool_use_id
+    )
+
+
+async def test_resume_confirming_the_task_exists_closes_that_campaign_for_good(
+    connect_without_flaws, make_message, script
+):
+    no_deadline = {**CAMPAIGN_2, "deadline": None}
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY)],
+                    [call("c3", "handoff", KEY)],
+                ),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY), call("c3", "review", KEY_2)],
+                    [call("c4", "handoff", KEY), call("c5", "handoff", KEY_2)],
+                ),
+            ],
+            (INTAKE, None): [
+                *script.intake(CAMPAIGN, no_deadline),
+                *script.intake(CAMPAIGN, CAMPAIGN_2),
+            ],
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            (REVIEW, "City Miles"): review_of(make_message, "AST-002"),
+            (HANDOFF, "Spring Linen Edit"): created_only(make_message),
+            (HANDOFF, "City Miles"): script.handoff(),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+        confirmed = await resume(
+            client, recorded, escalated.state, ConfirmTask(**KEY, task_exists=True), TODAY
+        )
+        state = CoordinatorState.model_validate_json(confirmed.state.model_dump_json())
+        result = await resume(client, recorded, state, Amend(text="Due 1 June 2030."), TODAY)
+
+    closed = confirmed.campaigns[0]
+    assert (closed.escalation, closed.task_may_exist, closed.handoff) == (None, True, None)
+    assert escalated.campaigns[0].task_id is not None
+    assert closed.task_id == escalated.campaigns[0].task_id
+    assert confirmed.loop_result is None
+    last_call = client.messages.calls[(COORDINATOR, None)][-1]
+    resumed_intake = json.loads(tool_result(last_call, "c1")["content"])
+    assert [(c["handed_off"], c["task_may_exist"]) for c in resumed_intake["campaigns"]] == [
+        (False, True),
+        (False, False),
+    ]
+    linen, miles = result.campaigns
+    assert linen.task_may_exist is True
+    assert linen.handoff is None
+    assert miles.handoff is not None
+    assert recorded.names.count("tracker_create_task") == 2  # Linen's first, then Miles's
+    assert result.state is None
+
+
+async def test_resume_with_acknowledge_leaves_a_campaign_whose_task_may_exist_escalated(
+    connect_without_flaws, make_message, script
+):
+    rejected = {"findings": [{**BLOCKING, "subject": "AST-002"}], "coverage": {"0": ["AST-002"]}}
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): coordinator_turns(
+                make_message,
+                [call("c1", "intake")],
+                [call("c2", "review", KEY), call("c3", "review", KEY_2)],
+                [call("c4", "handoff", KEY)],
+            ),
+            (INTAKE, None): script.intake(CAMPAIGN, CAMPAIGN_2),
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            (REVIEW, "City Miles"): [
+                make_message("tool_use", tool_uses=[call("r1", "submit_review", rejected)]),
+                make_message("end_turn", text="review"),
+            ],
+            (HANDOFF, "Spring Linen Edit"): created_only(make_message),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, TWO_CAMPAIGNS, today=TODAY)
+        result = await resume(client, session, escalated.state, Acknowledge(), TODAY)
+
+    linen, miles = result.campaigns
+    assert miles.revisions_requested is True
+    assert linen.escalation == escalated.campaigns[0].escalation
+    assert linen.task_may_exist is False
+    assert result.state.escalations == [linen.escalation]
+
+
+async def test_resume_confirming_no_task_exists_hands_the_campaign_off_again(
+    connect_without_flaws, routing_client, make_message, script
+):
+    full = [call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)]
+    rejected_create = [
+        make_message(
+            "tool_use",
+            tool_uses=[call("h1", "tracker_create_task", {"title": "T", "description": "D"})],
+        ),
+        make_message("end_turn", text="Gave up."),
+    ]
+    client = routing_client(
+        {
+            COORDINATOR: [*script.coordinator(*full), *script.coordinator(*full)],
+            INTAKE: [*script.intake(CAMPAIGN), *script.intake(CAMPAIGN)],
+            REVIEW: [*script.review(), *script.review()],
+            HANDOFF: [*rejected_create, *script.handoff()],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        flaky = RejectFirstCreate(recorded, "upstream_unavailable")
+        escalated = await coordinate(client, flaky, BRIEF, today=TODAY)
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, flaky, state, ConfirmTask(**KEY, task_exists=False), TODAY)
+
+    assert escalated.campaigns[0].escalation.reason == "task_may_exist"
+    [outcome] = result.campaigns
+    assert outcome.escalation is None
+    assert outcome.handoff is not None
+    assert recorded.names.count("tracker_create_task") == 1  # the first was rejected
+    assert result.state is None
+
+
+async def test_resume_confirming_a_task_for_a_campaign_without_that_escalation_is_rejected(
+    connect_without_flaws, make_message, script
+):
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): coordinator_turns(
+                make_message,
+                [call("c1", "intake")],
+                [call("c2", "review", KEY)],
+                [call("c3", "handoff", KEY)],
+            ),
+            (INTAKE, None): script.intake(CAMPAIGN, {**CAMPAIGN_2, "deadline": None}),
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            (HANDOFF, "Spring Linen Edit"): created_only(make_message),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, TWO_CAMPAIGNS, today=TODAY)
+        with pytest.raises(AnswerDoesNotFit):
+            await resume(
+                client, session, escalated.state, ConfirmTask(**KEY_2, task_exists=True), TODAY
+            )

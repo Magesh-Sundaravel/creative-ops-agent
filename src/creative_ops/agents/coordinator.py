@@ -33,8 +33,8 @@ You are the coordinator for a creative agency. Take the Brief from intake to han
 your tools: call `intake` once to turn the Brief into one Structured Brief per campaign, \
 then `review` each campaign, then `handoff` each campaign whose Review Verdict is approved. \
 Name a campaign by its brand and campaign name exactly as `intake` returns them. A campaign \
-marked `escalated` is waiting for a human, and one marked `handed_off` or \
-`revisions_requested` is done: don't review or hand any of them off. When there is nothing \
+marked `escalated` is waiting for a human, and one marked `handed_off`, `revisions_requested` or \
+`task_may_exist` is done: don't review or hand any of them off. When there is nothing \
 left to do, stop."""
 
 MAX_ITERATIONS = 8
@@ -128,6 +128,7 @@ class CampaignSummary(CampaignKey):
     escalated: bool
     handed_off: bool
     revisions_requested: bool
+    task_may_exist: bool
 
 
 class IntakeSummary(BaseModel):
@@ -158,6 +159,7 @@ EscalationReason = Literal[
     "duplicate_campaign",
     "revisions_requested",
     "run_failed",
+    "task_may_exist",
 ]
 
 
@@ -165,7 +167,7 @@ class Escalation(BaseModel):
     """A decision handed to a human: why, the kind of answer it takes, and what it needs."""
 
     reason: EscalationReason
-    answer: Literal["amend", "acknowledge", "retry"]
+    answer: Literal["amend", "acknowledge", "retry", "confirm_task"]
     needs: list[str]
     ambiguities: list[str]
 
@@ -179,14 +181,25 @@ class CampaignOutcome(BaseModel):
     escalation: Escalation | None = None
     revisions_requested: bool = False
     """Closed as revisions requested, once a human acknowledged its Escalation."""
+    task_may_exist: bool = False
+    """Closed against a Task a failed Handoff may have created, once a human confirmed it."""
+    task_id: str | None = None
+    """The Task a failed Handoff created, when known."""
 
     @property
     def closed(self) -> bool:
-        """Handed off or revisions requested: skipped after re-intake, and never re-run."""
+        """Handed off, revisions requested, or a Task may exist: skipped after re-intake.
+
+        Never re-run. A task-may-exist campaign reopens only when a human confirms no Task.
+        """
         return (
             self.handoff is not None
             or self.revisions_requested
-            or (self.escalation is not None and self.escalation.reason == "revisions_requested")
+            or self.task_may_exist
+            or (
+                self.escalation is not None
+                and self.escalation.reason in {"revisions_requested", "task_may_exist"}
+            )
         )
 
 
@@ -220,7 +233,7 @@ class CoordinatorResult(BaseModel):
     reviews: list[ReviewResult]
     failed_runs: list[FailedRun]
     loop_result: LoopResult | None
-    """None when no Coordinator Run happened (an acknowledge)."""
+    """None when no Coordinator Run happened (an acknowledge, or a confirmed Task)."""
     state: CoordinatorState | None
     """Set when there is any Escalation, to pass to `resume()`."""
 
@@ -268,9 +281,10 @@ async def _coordinate(
 
     def escalation(reason: EscalationReason, needs: list[str]) -> Escalation:
         """An Escalation carrying the Brief's Ambiguities."""
-        answers: dict[EscalationReason, Literal["acknowledge", "retry"]] = {
+        answers: dict[EscalationReason, Literal["acknowledge", "retry", "confirm_task"]] = {
             "revisions_requested": "acknowledge",
             "run_failed": "retry",
+            "task_may_exist": "confirm_task",
         }
         return Escalation(
             reason=reason,
@@ -342,6 +356,7 @@ async def _coordinate(
                     escalated=outcome.escalation is not None,
                     handed_off=key in handoff_claimed,
                     revisions_requested=outcomes[key].revisions_requested,
+                    task_may_exist=outcomes[key].task_may_exist,
                 )
             )
         if not result.campaigns:
@@ -358,10 +373,8 @@ async def _coordinate(
             raise ToolResultError(
                 permission_denied(f"This campaign is escalated to a human ({escalated.reason}).")
             )
-        if outcomes[(key.brand, key.campaign_name)].revisions_requested:
-            raise ToolResultError(
-                permission_denied("This campaign is closed: revisions requested.")
-            )
+        if outcomes[(key.brand, key.campaign_name)].closed:
+            raise ToolResultError(permission_denied("This campaign is closed."))
         # Claim the key before the first await, so two calls in one response can't both run.
         if (key.brand, key.campaign_name) in reviewing:
             raise ToolResultError(permission_denied("This campaign is already being reviewed."))
@@ -405,7 +418,7 @@ async def _coordinate(
             # Its Verdict may be about to change.
             raise ToolResultError(permission_denied("This campaign is being reviewed."))
         outcome = outcomes[(key.brand, key.campaign_name)]
-        if outcome.escalation is not None or outcome.revisions_requested:
+        if outcome.escalation is not None or outcome.closed:
             raise ToolResultError(
                 permission_denied("This campaign is escalated to a human, or closed.")
             )
@@ -428,20 +441,28 @@ async def _coordinate(
             handoff_claimed.discard((key.brand, key.campaign_name))
             raise
         if isinstance(package, FailedRun):
-            # Stays claimed: a Task may exist.
+            # Stays claimed: a Task may exist. Then never re-run, so the human closes it.
+            outcome.task_id = noted[-1].task_id
             if noted[-1].task_id:
-                needs = (
-                    f"Handoff failed ({package.error}) after creating tracker Task "
-                    f"{noted[-1].task_id}. Check that Task before retrying."
+                outcome.escalation = escalation(
+                    "task_may_exist",
+                    [
+                        f"Handoff failed ({package.error}) after creating tracker Task "
+                        f"{noted[-1].task_id}. Check that Task, then confirm whether it exists."
+                    ],
                 )
             elif noted[-1].task_may_exist:
-                needs = (
-                    f"Handoff failed ({package.error}) after trying to create a tracker Task. "
-                    "Check the tracker for that Task before retrying."
+                outcome.escalation = escalation(
+                    "task_may_exist",
+                    [
+                        f"Handoff failed ({package.error}) after trying to create a tracker "
+                        "Task. Check the tracker for that Task, then confirm whether it exists."
+                    ],
                 )
             else:
-                needs = f"Handoff failed twice ({package.error})"
-            outcome.escalation = escalation("run_failed", [needs])
+                outcome.escalation = escalation(
+                    "run_failed", [f"Handoff failed twice ({package.error})"]
+                )
             raise ToolResultError(permission_denied("Handoff failed; escalated to a human."))
         outcomes[(key.brand, key.campaign_name)].handoff = package
         return HandoffSummary(task_id=package.task_id).model_dump_json()
@@ -504,6 +525,17 @@ class Retry(BaseModel):
     kind: Literal["retry"] = "retry"
 
 
+class ConfirmTask(CampaignKey):
+    """A human's answer to one campaign's task-may-exist Escalation, after checking the tracker.
+
+    A Task exists: close the campaign against it, re-run nothing. None exists: reopen the
+    campaign and run the Coordinator again on the Brief, as Retry does.
+    """
+
+    kind: Literal["confirm_task"] = "confirm_task"
+    task_exists: bool
+
+
 class AnswerDoesNotFit(ValueError):
     """No open Escalation takes this kind of answer. Nothing was run."""
 
@@ -512,14 +544,17 @@ async def resume(
     client: AsyncAnthropic,
     session: Client,
     state: CoordinatorState,
-    answer: Amend | Acknowledge | Retry,
+    answer: Amend | Acknowledge | Retry | ConfirmTask,
     today: date | None = None,
 ) -> CoordinatorResult:
     """Continue after an Escalation, with an answer that fits at least one open Escalation.
 
     Amend runs the Coordinator again on the amended Brief, and Retry on the same Brief, with
     fresh retry counts; closed campaigns are carried. Acknowledge closes every
-    revisions-requested campaign without any Run. Other Escalations stay open after it.
+    revisions-requested campaign without any Run. ConfirmTask answers the one campaign it
+    names: a confirmed Task closes it without any Run, and no Task reopens it and runs the
+    Coordinator again as Retry does, so every other unclosed campaign runs again too. Other
+    Escalations stay open after an answer that runs nothing.
     """
     if answer.kind not in {e.answer for e in state.escalations}:
         raise AnswerDoesNotFit(f"No open Escalation takes {answer.kind!r}.")
@@ -527,12 +562,52 @@ async def resume(
         brief = f"{state.brief}\n\n{answer.text}" if isinstance(answer, Amend) else state.brief
         carried = [c for c in state.campaigns if c.closed]
         return await _coordinate(client, session, brief, today, carried)
+    if isinstance(answer, ConfirmTask):
+        return await _confirm_task(client, session, state, answer, today)
     campaigns = [
         c.model_copy(update={"escalation": None, "revisions_requested": True})
         if c.escalation is not None and c.escalation.reason == "revisions_requested"
         else c
         for c in state.campaigns
     ]
+    return _without_run(state, campaigns)
+
+
+async def _confirm_task(
+    client: AsyncAnthropic,
+    session: Client,
+    state: CoordinatorState,
+    answer: ConfirmTask,
+    today: date | None,
+) -> CoordinatorResult:
+    """Close the named task-may-exist campaign against its Task, or reopen it and run again."""
+
+    def named(c: CampaignOutcome) -> bool:
+        """`c` is the campaign `answer` names, and its Escalation is task-may-exist."""
+        return (
+            c.escalation is not None
+            and c.escalation.reason == "task_may_exist"
+            and (c.brand, c.campaign_name) == (answer.brand, answer.campaign_name)
+        )
+
+    if not any(map(named, state.campaigns)):
+        raise AnswerDoesNotFit(
+            f"No task_may_exist Escalation for {answer.brand!r} / {answer.campaign_name!r}."
+        )
+    campaigns = [
+        c.model_copy(update={"escalation": None, "task_may_exist": answer.task_exists})
+        if named(c)
+        else c
+        for c in state.campaigns
+    ]
+    if not answer.task_exists:
+        carried = [c for c in campaigns if c.closed]
+        return await _coordinate(client, session, state.brief, today, carried)
+    return _without_run(state, campaigns)
+
+
+def _without_run(state: CoordinatorState, campaigns: list[CampaignOutcome]) -> CoordinatorResult:
+    """The result of an answer that closed campaigns and ran nothing."""
     closed = state.model_copy(update={"campaigns": campaigns})
     return CoordinatorResult(
         campaigns=campaigns,

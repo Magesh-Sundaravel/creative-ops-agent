@@ -36,5 +36,5 @@ paths:
 
 ## Loop vs SDK
 - `loop/agent_loop.py` stays framework-free (raw `anthropic` SDK).
-- Use the Agent SDK only for subagent orchestration and hooks. Record each use as an ADR
-  in `docs/decisions/`.
+- The Coordinator runs on the same loop, not the Agent SDK (ADR 0005). Record any future
+  Agent SDK use as an ADR in `docs/decisions/`.

@@ -21,7 +21,7 @@ The client's request for creative work as free text, exactly as received.
 _Avoid_: Raw brief, request, job
 
 **Structured Brief**:
-The fields of a Brief, holding only what the Brief states and nothing inferred.
+The fields of one campaign in a Brief, holding only what the Brief states and nothing inferred. A Brief has one or more.
 _Avoid_: Parsed brief, brief object
 
 **Missing Field**:
@@ -71,3 +71,13 @@ _Avoid_: Handover, delivery pack, output
 **Gate**:
 A check that a write to the client stack has to pass before it happens, regardless of what the agent intends.
 _Avoid_: Guard, permission, approval
+
+### Coordination
+
+**Coordinator**:
+The agent that takes a Brief through intake, review and handoff, deciding which agent runs next from what each one returns.
+_Avoid_: Orchestrator, supervisor, manager
+
+**Escalation**:
+The Coordinator stopping and handing a decision to a human, with the reason, what it needs, and every Ambiguity in the Brief.
+_Avoid_: Escalation gate, human gate, approval

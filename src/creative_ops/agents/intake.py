@@ -1,4 +1,4 @@
-"""Intake agent: a Brief in, a Structured Brief out."""
+"""Intake agent: a Brief in, one Structured Brief per campaign out."""
 
 from datetime import date
 
@@ -11,8 +11,9 @@ from creative_ops.tools.tool import Tool
 
 SYSTEM_PROMPT = """\
 You are an intake agent for a creative agency. Read the Brief and record it by calling \
-`submit_brief`. Extract only what the Brief states; leave any field it does not give empty. \
-List anything unclear or contradictory as an ambiguity. Today's date is {today}.
+`submit_brief`, with one Structured Brief per campaign the Brief names. Extract only what \
+the Brief states; leave any field it does not give empty. List anything unclear or \
+contradictory in the Brief as an ambiguity. Today's date is {today}.
 
 Rules:
 - Resolve a date with no year against today's date, to its next occurrence on or after today. \
@@ -24,7 +25,9 @@ ambiguity quoting the Brief.
 - Never derive the deadline from deliverable due dates; leave it empty if the Brief gives \
 only per-deliverable dates.
 - If a deliverable's due date is after the deadline, add an ambiguity.
-- If the text is not a Brief, submit an empty brief."""
+- Copy a fact stated once for all campaigns (such as a shared deadline, brand or usage \
+rights) into each campaign's Structured Brief.
+- If the text is not a Brief, submit no Structured Briefs."""
 
 
 class NoValidSubmission(RuntimeError):
@@ -38,12 +41,18 @@ class NoValidSubmission(RuntimeError):
         self.loop_result = loop_result
 
 
-class IntakeResult(BaseModel):
-    """The outcome of intake."""
+class CampaignIntake(BaseModel):
+    """One campaign's Structured Brief and its Missing Fields."""
 
     brief: StructuredBrief
     missing_fields: list[str]
     critical_missing: bool
+
+
+class IntakeResult(BaseModel):
+    """The outcome of intake: one entry per campaign, none if the text is not a Brief."""
+
+    campaigns: list[CampaignIntake]
     ambiguities: list[str]
     loop_result: LoopResult
 
@@ -74,7 +83,7 @@ def _missing(brief: StructuredBrief) -> list[tuple[str, bool]]:
 
 
 async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) -> IntakeResult:
-    """Turn a Brief (plain text) into a Structured Brief."""
+    """Turn a Brief (plain text) into one Structured Brief per campaign."""
     today = today or date.today()
     submissions: list[SubmitBrief] = []
 
@@ -84,7 +93,9 @@ async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) 
 
     tool = Tool(
         name="submit_brief",
-        description="Submit the Structured Brief extracted from the Brief, with any ambiguities.",
+        description=(
+            "Submit one Structured Brief per campaign in the Brief, with the Brief's ambiguities."
+        ),
         input_model=SubmitBrief,
         handler=handler,
     )
@@ -94,11 +105,17 @@ async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) 
     if not submissions:
         raise NoValidSubmission(loop_result)
     last = submissions[-1]
-    missing = _missing(last.brief)
     return IntakeResult(
-        brief=last.brief,
-        missing_fields=[path for path, _ in missing],
-        critical_missing=any(critical for _, critical in missing),
+        campaigns=[_campaign(brief) for brief in last.briefs],
         ambiguities=last.ambiguities,
         loop_result=loop_result,
+    )
+
+
+def _campaign(brief: StructuredBrief) -> CampaignIntake:
+    missing = _missing(brief)
+    return CampaignIntake(
+        brief=brief,
+        missing_fields=[path for path, _ in missing],
+        critical_missing=any(critical for _, critical in missing),
     )

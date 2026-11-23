@@ -89,3 +89,13 @@ class ToolError(BaseModel):
     message: str
     retryable: bool
     details: dict[str, Any]
+
+
+def permission_denied(message: str) -> str:
+    """A `permission_denied` ToolError, as JSON, for a call a Gate refuses.
+
+    Also for a call whose failure escalates its campaign to a human.
+    """
+    return ToolError(
+        type="permission_denied", message=message, retryable=False, details={}
+    ).model_dump_json()

@@ -11,7 +11,7 @@ from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 from pydantic import BaseModel, ValidationError
 
 from creative_ops.config import get_settings
-from creative_ops.tools.tool import Tool
+from creative_ops.tools.tool import Tool, ToolResultError
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,8 @@ async def _call_tool(block: ToolUseBlock, tools_by_name: dict[str, Tool]) -> Too
         return error(f"Invalid input for tool {block.name!r}: {type(exc).__name__}: {exc}")
     try:
         output = await tool.handler(args)
+    except ToolResultError as exc:
+        return error(str(exc))
     except Exception as exc:
         logger.exception("Tool %r raised", block.name)
         return error(f"Tool {block.name!r} failed: {type(exc).__name__}: {exc}")

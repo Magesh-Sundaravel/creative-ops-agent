@@ -17,12 +17,13 @@ Acme spring launch. Two Instagram reels, due 15 Nov. Budget around £40k.
 Output (abridged):
 
 ```text
-brand:            Acme
-deliverables:     [{asset_type: reel, channel: Instagram, quantity: 2}]
-deadline:         2026-11-15      # year-less date, resolved from today
-budget:           40000 GBP
-missing_fields:   objective, target_audience, usage_rights, deliverables[0].format_or_dimensions, ...
-critical_missing: true     # no objective, so a human reviews before work starts
+campaigns:                        # one per campaign in the brief
+  - brand:            Acme
+    deliverables:     [{asset_type: reel, channel: Instagram, quantity: 2}]
+    deadline:         2026-11-15  # year-less date, resolved from today
+    budget:           40000 GBP
+    missing_fields:   objective, target_audience, usage_rights, deliverables[0].format_or_dimensions, ...
+    critical_missing: true        # no objective, so a human reviews before work starts
 ambiguities:      ["Budget is stated as 'around £40k'"]
 ```
 

@@ -1,4 +1,4 @@
-"""Structured Brief: the fields of a Brief, holding only what the Brief states."""
+"""Structured Brief: the fields of one campaign in a Brief, holding only what the Brief states."""
 
 from datetime import date
 from decimal import Decimal
@@ -50,7 +50,10 @@ class StructuredBrief(BaseModel):
 
 
 class SubmitBrief(BaseModel):
-    """Input of the `submit_brief` tool; keeps Ambiguities out of the Structured Brief."""
+    """Input of the `submit_brief` tool: one Structured Brief per campaign.
 
-    brief: StructuredBrief
+    Ambiguities stay at Brief level, outside the Structured Briefs.
+    """
+
+    briefs: list[StructuredBrief]
     ambiguities: list[str] = []

@@ -19,14 +19,14 @@ Setup/config steps skip spec and tickets.
 ## Stack
 
 Python 3.12, uv, Pydantic v2, pytest + pytest-asyncio, Ruff.
-`anthropic` SDK for the hand-written agent loop; Claude Agent SDK for subagent orchestration;
+`anthropic` SDK for the hand-written agent loop, which also runs the Coordinator (ADR 0005);
 `mcp` SDK for the mock server. FastAPI backend, Streamlit UI, Docker.
 
 ## Architecture
 
 ```
 Streamlit UI ──> FastAPI ──> Coordinator agent
-                                  ├── Intake   (brief -> StructuredBrief)
+                                  ├── Intake   (brief -> one StructuredBrief per campaign)
                                   ├── Review   (assets vs brief + brand rules)
                                   └── Handoff  (handoff package for production)
                                           │
@@ -36,8 +36,8 @@ Streamlit UI ──> FastAPI ──> Coordinator agent
                                    └── resources: brand://brands, brand://guidelines/{brand}
 ```
 
-Flow: raw brief → intake (validated `StructuredBrief`, gaps flagged) → human gate if critical
-fields are missing → asset review → approve / request revisions → handoff package + tracker task.
+Flow: raw brief → intake (one validated `StructuredBrief` per campaign, gaps flagged) →
+Escalation if critical fields are missing → asset review → approve / request revisions → handoff package + tracker task.
 
 ## Layout
 

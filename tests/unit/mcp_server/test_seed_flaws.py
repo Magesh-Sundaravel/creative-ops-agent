@@ -9,12 +9,6 @@ async def _search(client, **filters):
     return result.structured_content["assets"]
 
 
-async def _get(client, asset_id):
-    result = await client.call_tool("dam_get_asset", {"asset_id": asset_id})
-    assert not result.is_error
-    return result.structured_content
-
-
 def _is_landscape(dimensions):
     width, height = (int(n) for n in dimensions.split("x"))
     return width > height
@@ -50,29 +44,40 @@ async def test_seed_flaw_expired_usage_rights_uses_fixed_past_date(connect):
 
 async def test_seed_flaw_wrong_territory_rights_share_none_with_rest_of_campaign(connect):
     async with connect() as client:
-        flawed = await _get(client, "AST-015")
-        campaign = await _search(client, campaign_name=flawed["campaign_name"])
+        assets = await _search(client)
 
-    campaign_territories = {
-        t for a in campaign if a["id"] != "AST-015" for t in a["usage_rights"]["territories"]
-    }
-    assert campaign_territories
-    assert campaign_territories.isdisjoint(flawed["usage_rights"]["territories"])
+    def rest_of_campaign_territories(asset):
+        return {
+            t
+            for a in assets
+            if a["campaign_name"] == asset["campaign_name"] and a["id"] != asset["id"]
+            for t in a["usage_rights"]["territories"]
+        }
+
+    clashing = [
+        a["id"]
+        for a in assets
+        if rest_of_campaign_territories(a).isdisjoint(a["usage_rights"]["territories"])
+    ]
+    assert clashing == ["AST-015"]
 
 
 async def test_seed_flaw_draft_among_finals_in_same_campaign(connect):
     async with connect() as client:
         drafts = await _search(client, status="draft")
+        assert [a["id"] for a in drafts] == ["AST-009"]
         campaign = await _search(client, campaign_name=drafts[0]["campaign_name"])
 
-    assert [a["id"] for a in drafts] == ["AST-009"]
     assert "final" in {a["status"] for a in campaign}
 
 
 async def test_seed_flaw_channel_not_in_brands_approved_channels(connect):
     async with connect() as client:
-        flawed = await _get(client, "AST-019")
-        resource = await client.read_resource(f"brand://guidelines/{flawed['brand']}")
+        assets = await _search(client)
+        approved = {}
+        for brand in {a["brand"] for a in assets}:
+            resource = await client.read_resource(f"brand://guidelines/{brand}")
+            approved[brand] = json.loads(resource.contents[0].text)["approved_channels"]
 
-    approved = json.loads(resource.contents[0].text)["approved_channels"]
-    assert flawed["channel"] not in approved
+    unapproved = [a["id"] for a in assets if a["channel"] not in approved[a["brand"]]]
+    assert unapproved == ["AST-019"]

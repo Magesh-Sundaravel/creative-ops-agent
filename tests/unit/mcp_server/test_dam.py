@@ -101,10 +101,10 @@ async def test_search_single_filter_narrows_results(connect):
 
 async def test_search_filters_combine_with_and(connect):
     async with connect() as client:
-        both = await _search(client, asset_type="video", channel="youtube")
+        both = await _search(client, brand="verdant-skin", channel="instagram")
         clash = await _search(client, brand="loomhouse", channel="tiktok")
 
-    assert [a["id"] for a in both] == ["AST-011"]
+    assert [a["id"] for a in both] == ["AST-016", "AST-020"]
     assert clash == []
 
 

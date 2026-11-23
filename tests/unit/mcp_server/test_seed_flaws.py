@@ -30,6 +30,24 @@ async def test_seed_flaw_wrong_dimensions_landscape_video_on_tiktok(connect):
     assert [a["id"] for a in tiktok if _is_landscape(a["format_or_dimensions"])] == ["AST-014"]
 
 
+async def test_seed_flaw_wrong_dimensions_only_ast_014_breaks_its_channel_spec(connect):
+    async with connect() as client:
+        assets = await _search(client)
+        spec = {}
+        for brand in {a["brand"] for a in assets}:
+            resource = await client.read_resource(f"brand://guidelines/{brand}")
+            spec[brand] = json.loads(resource.contents[0].text)["channel_dimensions"]
+
+    # An Asset on an unapproved channel has no spec; that is a different flaw (AST-019).
+    off_spec = [
+        a["id"]
+        for a in assets
+        if a["channel"] in spec[a["brand"]]
+        and a["format_or_dimensions"] not in spec[a["brand"]][a["channel"]]
+    ]
+    assert off_spec == ["AST-014"]
+
+
 async def test_seed_flaw_expired_usage_rights_uses_fixed_past_date(connect):
     async with connect() as client:
         assets = await _search(client)

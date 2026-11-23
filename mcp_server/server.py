@@ -84,6 +84,14 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
     """
     brands = {brand.slug: brand for brand in _load(seed_dir / "brands.json", Brand)}
     brand_slugs = brands.keys()
+    for brand in brands.values():
+        guidelines = brand.guidelines
+        if guidelines.channel_dimensions.keys() != set(guidelines.approved_channels):
+            raise ValueError(
+                f"Seed brand {brand.slug!r} has channel_dimensions for "
+                f"{sorted(guidelines.channel_dimensions)}, not its approved channels "
+                f"{sorted(guidelines.approved_channels)}"
+            )
     assets = {asset.id: asset for asset in _load(seed_dir / "assets.json", Asset)}
     for asset in assets.values():
         if asset.brand not in brand_slugs:
@@ -241,7 +249,8 @@ def build_server(seed_dir: Path = SEED_DIR) -> MCPServer:
     @server.resource("brand://guidelines/{brand}", mime_type="application/json")
     async def brand_guidelines(brand: str) -> str:
         """A brand's Brand Guidelines: palette, typography, logo rules, tone of voice, do's,
-        don'ts, mandatory legal lines and approved channels.
+        don'ts, mandatory legal lines, approved channels and the allowed dimensions ("WxH")
+        for each approved channel.
 
         `brand` is the brand slug, e.g. "loomhouse". List the slugs with `brand://brands`.
         """

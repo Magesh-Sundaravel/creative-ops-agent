@@ -53,3 +53,21 @@ _Avoid_: Brand book, style guide, brand rules
 **Task**:
 A unit of agency work tracked in the project tracker, moving through a fixed set of statuses until it is delivered.
 _Avoid_: Ticket, job, card
+
+### Review and handoff
+
+**Finding**:
+One problem Review reports, either with an Asset or with a deliverable that has no matching Asset. It is either blocking or advisory.
+_Avoid_: Issue, flag, violation
+
+**Review Verdict**:
+The result of a review: approved when there are no blocking Findings, and revisions requested otherwise.
+_Avoid_: Decision, outcome, status
+
+**Handoff Package**:
+Everything production needs to deliver an approved campaign: which Assets cover each deliverable, the Usage Rights, mandatory legal lines, the deadline, notes, and the Task created for the work.
+_Avoid_: Handover, delivery pack, output
+
+**Gate**:
+A check that a write to the client stack has to pass before it happens, regardless of what the agent intends.
+_Avoid_: Guard, permission, approval

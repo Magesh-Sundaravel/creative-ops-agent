@@ -1,5 +1,5 @@
 ---
-status: accepted (revisit in build step 5)
+status: accepted (write ordering settled by ADR 0004)
 ---
 
 # Tool calls in one response run concurrently

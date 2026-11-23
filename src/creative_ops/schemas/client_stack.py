@@ -1,6 +1,7 @@
 """Client-stack data as the agents read it over MCP. Independent of the mock server's models."""
 
 from datetime import date
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -79,3 +80,12 @@ class Task(BaseModel):
     description: str
     due_date: date | None
     status: str
+
+
+class ToolError(BaseModel):
+    """What a client-stack tool, or a Gate in front of one, returns instead of a result."""
+
+    type: Literal["not_found", "invalid_input", "permission_denied", "upstream_unavailable"]
+    message: str
+    retryable: bool
+    details: dict[str, Any]

@@ -1,5 +1,6 @@
 """Coordinator: a Brief in, taken through intake, review and handoff (see ADR 0005)."""
 
+from collections import Counter
 from datetime import date
 from typing import Literal
 
@@ -7,7 +8,7 @@ from anthropic import AsyncAnthropic
 from mcp import Client
 from pydantic import BaseModel
 
-from creative_ops.agents.handoff import HandoffPackage, handoff
+from creative_ops.agents.handoff import CannotHandoff, HandoffPackage, handoff
 from creative_ops.agents.intake import IntakeResult, intake
 from creative_ops.agents.review import CannotReview, ReviewResult, review
 from creative_ops.loop.agent_loop import LoopResult, run
@@ -20,8 +21,8 @@ You are the coordinator for a creative agency. Take the Brief from intake to han
 your tools: call `intake` once to turn the Brief into one Structured Brief per campaign, \
 then `review` each campaign, then `handoff` each campaign whose Review Verdict is approved. \
 Name a campaign by its brand and campaign name exactly as `intake` returns them. A campaign \
-marked `escalated` is waiting for a human: don't review or hand it off. When there is nothing \
-left to do, stop."""
+marked `escalated` is waiting for a human, and one marked `handed_off` is done: don't review \
+or hand either off. When there is nothing left to do, stop."""
 
 MAX_ITERATIONS = 8
 
@@ -42,6 +43,7 @@ class CampaignSummary(CampaignKey):
 
     missing_fields: list[str]
     escalated: bool
+    handed_off: bool
 
 
 class IntakeSummary(BaseModel):
@@ -64,7 +66,13 @@ class HandoffSummary(BaseModel):
     task_id: str
 
 
-EscalationReason = Literal["missing_critical_field", "cannot_review", "not_a_brief"]
+EscalationReason = Literal[
+    "missing_critical_field",
+    "cannot_review",
+    "not_a_brief",
+    "unnamed_campaign",
+    "duplicate_campaign",
+]
 
 
 class Escalation(BaseModel):
@@ -90,6 +98,8 @@ class CoordinatorState(BaseModel):
 
     brief: str
     escalations: list[Escalation]
+    handed_off: list[CampaignOutcome]
+    """Campaigns already handed off; skipped after re-intake, so no Task is created twice."""
 
 
 class CoordinatorResult(BaseModel):
@@ -112,12 +122,29 @@ async def coordinate(
     client: AsyncAnthropic, session: Client, brief: str, today: date | None = None
 ) -> CoordinatorResult:
     """Take a Brief through intake, review and handoff."""
+    return await _coordinate(client, session, brief, today, handed_off=[])
+
+
+async def _coordinate(
+    client: AsyncAnthropic,
+    session: Client,
+    brief: str,
+    today: date | None,
+    handed_off: list[CampaignOutcome],
+) -> CoordinatorResult:
+    """A Coordinator Run that skips the campaigns in `handed_off` and keeps their outcomes."""
     intakes: list[IntakeResult] = []
     reviews: list[ReviewResult] = []
     current_review: dict[tuple[str, str], ReviewResult] = {}
     intake_claimed = False
+    reviewing: set[tuple[str, str]] = set()
+    handoff_claimed = {(o.brand, o.campaign_name) for o in handed_off}
     briefs: dict[tuple[str | None, str | None], StructuredBrief] = {}
-    outcomes: dict[tuple[str | None, str | None], CampaignOutcome] = {}
+    recorded = list(handed_off)
+    """Every campaign's outcome, handed-off ones first; two campaigns may share a key."""
+    outcomes: dict[tuple[str | None, str | None], CampaignOutcome] = {
+        (o.brand, o.campaign_name): o for o in handed_off
+    }
     brief_escalation: Escalation | None = None
 
     def campaign(key: CampaignKey) -> StructuredBrief:
@@ -154,35 +181,54 @@ async def coordinate(
             # A failed Run recorded no campaigns, so intake may run again.
             intake_claimed = succeeded
         intakes.append(result)
+        counts = Counter((c.brief.brand, c.brief.campaign_name) for c in result.campaigns)
+        summaries: list[CampaignSummary] = []
         for c in result.campaigns:
             key = (c.brief.brand, c.brief.campaign_name)
             briefs[key] = c.brief
-            outcomes[key] = CampaignOutcome(brand=key[0], campaign_name=key[1])
-            if c.critical_missing:
-                outcomes[key].escalation = escalation("missing_critical_field", c.critical_fields)
+            # Handed off in an earlier Coordinator Run, so skipped, unless the key is now shared.
+            handed = key in handoff_claimed and counts[key] == 1
+            if not handed:
+                outcome = CampaignOutcome(brand=key[0], campaign_name=key[1])
+                recorded.append(outcome)
+                outcomes[key] = outcome
+                if c.brief.campaign_name is None:
+                    # Never guessed at: the name is how campaigns match across Intake runs.
+                    outcome.escalation = escalation("unnamed_campaign", ["campaign_name"])
+                elif counts[key] > 1:
+                    needs = f"A different campaign name for each {key[0]!r} campaign {key[1]!r}"
+                    if key in handoff_claimed:
+                        needs += "; one of them is already handed off, so keep its name"
+                    outcome.escalation = escalation("duplicate_campaign", [needs])
+                elif c.critical_missing:
+                    outcome.escalation = escalation("missing_critical_field", c.critical_fields)
+            summaries.append(
+                CampaignSummary(
+                    brand=str(key[0]),
+                    campaign_name=str(key[1]),
+                    missing_fields=c.missing_fields,
+                    escalated=outcomes[key].escalation is not None,
+                    handed_off=key in handoff_claimed,
+                )
+            )
         if not result.campaigns:
             brief_escalation = escalation("not_a_brief", ["A Brief naming at least one campaign"])
-        return IntakeSummary(
-            campaigns=[
-                CampaignSummary(
-                    brand=str(c.brief.brand),
-                    campaign_name=str(c.brief.campaign_name),
-                    missing_fields=c.missing_fields,
-                    escalated=c.critical_missing,
-                )
-                for c in result.campaigns
-            ],
-            ambiguities=result.ambiguities,
-        ).model_dump_json()
+        return IntakeSummary(campaigns=summaries, ambiguities=result.ambiguities).model_dump_json()
 
     async def run_review(key: CampaignKey) -> str:
         """Run Review on one campaign and record its result, unless it is escalated (Gate)."""
         structured = campaign(key)
+        if (key.brand, key.campaign_name) in handoff_claimed:
+            raise ToolResultError(permission_denied("This campaign is already handed off."))
         escalated = outcomes[(key.brand, key.campaign_name)].escalation
         if escalated is not None:
             raise ToolResultError(
                 permission_denied(f"This campaign is escalated to a human ({escalated.reason}).")
             )
+        # Claim the key before the first await, so two calls in one response can't both run.
+        if (key.brand, key.campaign_name) in reviewing:
+            raise ToolResultError(permission_denied("This campaign is already being reviewed."))
+        reviewing.add((key.brand, key.campaign_name))
         try:
             result = await review(client, session, structured, today)
         except CannotReview as exc:
@@ -190,6 +236,8 @@ async def coordinate(
                 "cannot_review", [str(exc)]
             )
             raise ToolResultError(permission_denied(f"Escalated to a human: {exc}")) from exc
+        finally:
+            reviewing.discard((key.brand, key.campaign_name))
         reviews.append(result)
         current_review[(key.brand, key.campaign_name)] = result
         return ReviewSummary(
@@ -198,12 +246,26 @@ async def coordinate(
         ).model_dump_json()
 
     async def run_handoff(key: CampaignKey) -> str:
-        """Run Handoff on one reviewed campaign and record its Handoff Package."""
+        """Run Handoff on one reviewed campaign, at most once per Coordinator Run (Gate)."""
         structured = campaign(key)
+        if (key.brand, key.campaign_name) in handoff_claimed:
+            raise ToolResultError(
+                permission_denied("This campaign is already handed off, or being handed off.")
+            )
+        if (key.brand, key.campaign_name) in reviewing:
+            # Its Verdict may be about to change.
+            raise ToolResultError(permission_denied("This campaign is being reviewed."))
         reviewed = current_review.get((key.brand, key.campaign_name))
         if reviewed is None:
             raise ToolResultError("Review this campaign before handing it off.")
-        package = await handoff(client, session, structured, reviewed)
+        # Claim the key before the first await, so two calls in one response can't both run.
+        handoff_claimed.add((key.brand, key.campaign_name))
+        try:
+            package = await handoff(client, session, structured, reviewed)
+        except CannotHandoff:
+            # Refused before any Task was created. Any other failure may have created one.
+            handoff_claimed.discard((key.brand, key.campaign_name))
+            raise
         outcomes[(key.brand, key.campaign_name)].handoff = package
         return HandoffSummary(task_id=package.task_id).model_dump_json()
 
@@ -234,7 +296,7 @@ async def coordinate(
         system=SYSTEM_PROMPT,
         max_iterations=MAX_ITERATIONS,
     )
-    campaigns = list(outcomes.values())
+    campaigns = recorded
     escalations = [
         e for e in [brief_escalation, *(c.escalation for c in campaigns)] if e is not None
     ]
@@ -244,7 +306,15 @@ async def coordinate(
         intakes=intakes,
         reviews=reviews,
         loop_result=loop_result,
-        state=CoordinatorState(brief=brief, escalations=escalations) if escalations else None,
+        state=(
+            CoordinatorState(
+                brief=brief,
+                escalations=escalations,
+                handed_off=[c for c in campaigns if c.handoff is not None],
+            )
+            if escalations
+            else None
+        ),
     )
 
 
@@ -263,4 +333,5 @@ async def resume(
     today: date | None = None,
 ) -> CoordinatorResult:
     """Continue after an Escalation: a new Coordinator Run on the amended Brief."""
-    return await coordinate(client, session, f"{state.brief}\n\n{answer.text}", today)
+    amended = f"{state.brief}\n\n{answer.text}"
+    return await _coordinate(client, session, amended, today, state.handed_off)

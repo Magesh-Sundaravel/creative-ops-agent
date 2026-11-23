@@ -24,6 +24,7 @@ CAMPAIGN = {
     "deadline": "2031-03-01",
 }
 KEY = {"brand": "Loomhouse", "campaign_name": "Spring Linen Edit"}
+FLAWED = {"AST-009", "AST-014", "AST-015"}
 
 
 def route(module) -> str:
@@ -36,10 +37,10 @@ COORDINATOR, INTAKE, REVIEW, HANDOFF = (route(m) for m in (coordinator, intake, 
 
 @pytest.fixture
 def connect_without_flaws(tmp_path):
-    """Like `connect`, but the seed has no Spring Linen Edit Asset that fails a check."""
+    """Like `connect`, but no Spring Linen Edit or City Miles Asset fails a check."""
     shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
     assets = json.loads((tmp_path / "assets.json").read_text())
-    (tmp_path / "assets.json").write_text(json.dumps([a for a in assets if a["id"] != "AST-009"]))
+    (tmp_path / "assets.json").write_text(json.dumps([a for a in assets if a["id"] not in FLAWED]))
     return lambda: Client(build_server(tmp_path))
 
 
@@ -447,3 +448,279 @@ async def test_resume_with_amend_reruns_intake_on_amended_brief_and_reaches_hand
     assert outcome.escalation is None
     assert outcome.handoff.deadline == date(2031, 3, 1)
     assert result.state is None
+
+
+CAMPAIGN_2 = {
+    "brand": "Stridewell",
+    "campaign_name": "City Miles",
+    "objective": "Launch the running range",
+    "deliverables": [{"asset_type": "video", "channel": "TikTok"}],
+    "deadline": "2030-06-01",
+}
+KEY_2 = {"brand": "Stridewell", "campaign_name": "City Miles"}
+TWO_CAMPAIGNS = f"{BRIEF} Stridewell, City Miles: a TikTok video, due 1 June 2030."
+
+
+class CampaignRoutingMessages:
+    """Like the routing client, but a `(prefix, campaign_name)` route also needs that campaign
+    name in the Run's first message, so concurrent Runs of the same agent stay deterministic.
+    A route with campaign_name `None` matches any Run of that agent.
+    """
+
+    def __init__(self, routes: dict[tuple[str, str | None], list]) -> None:
+        self._routes = {key: list(responses) for key, responses in routes.items()}
+        self.calls: dict[tuple[str, str | None], list[dict]] = {key: [] for key in routes}
+
+    async def create(self, **kwargs):
+        first = kwargs["messages"][0]["content"]
+        for (prefix, name), responses in self._routes.items():
+            if kwargs["system"].startswith(prefix) and (name is None or name in first):
+                self.calls[(prefix, name)].append(kwargs)
+                if not responses:
+                    raise AssertionError(f"Route {(prefix, name)!r} has no responses left")
+                return responses.pop(0)
+        raise AssertionError(f"No route for system prompt {kwargs['system']!r}")
+
+
+class CampaignRoutingClient:
+    def __init__(self, routes: dict[tuple[str, str | None], list]) -> None:
+        self.messages = CampaignRoutingMessages(routes)
+
+
+def review_of(make_message, asset_id: str) -> list:
+    """A Review Run that covers deliverable 0 with one Asset and finds nothing."""
+    submission = {"findings": [], "coverage": {"0": [asset_id]}}
+    return [
+        make_message("tool_use", tool_uses=[call("r1", "submit_review", submission)]),
+        make_message("end_turn", text="review"),
+    ]
+
+
+def coordinator_turns(make_message, *turns: list[dict]) -> list:
+    """One Coordinator response per turn, each issuing all that turn's calls, then end_turn."""
+    return [
+        *(make_message("tool_use", tool_uses=t) for t in turns),
+        make_message("end_turn", text="All done."),
+    ]
+
+
+@pytest.fixture
+def two_campaigns(make_message, script):
+    """A client for a two-campaign Brief: `two_campaigns(*turns, intake=..., second=...)`."""
+
+    def build(*turns: list[dict], intake: list | None = None) -> CampaignRoutingClient:
+        return CampaignRoutingClient(
+            {
+                (COORDINATOR, None): coordinator_turns(make_message, *turns),
+                (INTAKE, None): intake or script.intake(CAMPAIGN, CAMPAIGN_2),
+                (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+                (REVIEW, "City Miles"): review_of(make_message, "AST-002"),
+                (HANDOFF, "Spring Linen Edit"): script.handoff(),
+                (HANDOFF, "City Miles"): script.handoff(),
+            }
+        )
+
+    return build
+
+
+def results_of(client, turn: int) -> list[dict]:
+    """The tool results the Coordinator saw after its `turn`-th response (1-based)."""
+    return client.messages.calls[(COORDINATOR, None)][turn]["messages"][-1]["content"]
+
+
+async def test_coordinate_two_campaigns_reviewed_in_one_response_both_reach_handoff(
+    connect_without_flaws, two_campaigns
+):
+    client = two_campaigns(
+        [call("c1", "intake")],
+        [call("c2", "review", KEY), call("c3", "review", KEY_2)],
+        [call("c4", "handoff", KEY), call("c5", "handoff", KEY_2)],
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+
+    assert [(c.campaign_name, c.escalation) for c in result.campaigns] == [
+        ("Spring Linen Edit", None),
+        ("City Miles", None),
+    ]
+    assert all(c.handoff is not None for c in result.campaigns)
+    assert all("is_error" not in r for r in results_of(client, 2))
+    assert recorded.names.count("tracker_create_task") == 2
+
+
+async def test_coordinate_one_campaign_escalating_leaves_the_other_to_reach_handoff(
+    connect_without_flaws, two_campaigns, script
+):
+    unknown = {**KEY_2, "brand": "Nobody"}
+    client = two_campaigns(
+        [call("c1", "intake")],
+        [call("c2", "review", KEY), call("c3", "review", unknown)],
+        [call("c4", "handoff", KEY)],
+        intake=script.intake(CAMPAIGN, {**CAMPAIGN_2, **unknown}),
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, TWO_CAMPAIGNS, today=TODAY)
+
+    linen, miles = result.campaigns
+    assert linen.handoff is not None
+    assert linen.escalation is None
+    assert miles.handoff is None
+    assert miles.escalation.reason == "cannot_review"
+    assert result.state.escalations == [miles.escalation]
+
+
+async def test_coordinate_two_handoffs_of_one_campaign_in_one_response_create_one_task(
+    connect_without_flaws, two_campaigns
+):
+    client = two_campaigns(
+        [call("c1", "intake")],
+        [call("c2", "review", KEY)],
+        [call("c3", "handoff", KEY), call("c4", "handoff", KEY)],
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+
+    first, second = results_of(client, 3)
+    assert "is_error" not in first
+    assert second["is_error"] is True
+    assert json.loads(second["content"])["type"] == "permission_denied"
+    assert recorded.names.count("tracker_create_task") == 1
+    assert result.campaigns[0].handoff is not None
+
+
+async def test_resume_skips_a_campaign_already_handed_off_and_creates_no_duplicate_task(
+    connect_without_flaws, make_message, script
+):
+    no_deadline = {**CAMPAIGN_2, "deadline": None}
+    both = [call("c2", "review", KEY), call("c3", "review", KEY_2)]
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY)],
+                    [call("c3", "handoff", KEY)],
+                ),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    both,
+                    [call("c4", "handoff", KEY), call("c5", "handoff", KEY_2)],
+                ),
+            ],
+            (INTAKE, None): [
+                *script.intake(CAMPAIGN, no_deadline),
+                *script.intake(CAMPAIGN, CAMPAIGN_2),
+            ],
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            (REVIEW, "City Miles"): review_of(make_message, "AST-002"),
+            (HANDOFF, "Spring Linen Edit"): script.handoff(),
+            (HANDOFF, "City Miles"): script.handoff(),
+        }
+    )
+    brief = f"{BRIEF} Stridewell, City Miles: a TikTok video."
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, brief, today=TODAY)
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, recorded, state, Amend(text="Due 1 June 2030."), TODAY)
+
+    calls = client.messages.calls[(COORDINATOR, None)]
+    resumed_intake = json.loads(calls[5]["messages"][-1]["content"][0]["content"])
+    assert [c["handed_off"] for c in resumed_intake["campaigns"]] == [True, False]
+    for denied in (calls[6]["messages"][-1]["content"][0], calls[7]["messages"][-1]["content"][0]):
+        assert denied["is_error"] is True
+        assert json.loads(denied["content"])["type"] == "permission_denied"
+    assert recorded.names.count("tracker_create_task") == 2
+    linen, miles = result.campaigns
+    assert linen.handoff.model_dump_json() == escalated.campaigns[0].handoff.model_dump_json()
+    assert miles.handoff is not None
+    assert result.state is None
+
+
+async def test_campaign_with_no_name_escalates_and_again_after_an_amend(
+    connect_without_flaws, routing_client, script
+):
+    unnamed = {**CAMPAIGN, "campaign_name": None}
+    client = routing_client(
+        {
+            COORDINATOR: 2 * script.coordinator(call("c1", "intake")),
+            INTAKE: 2 * script.intake(unnamed),
+            REVIEW: [],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, BRIEF, today=TODAY)
+        result = await resume(client, session, escalated.state, Amend(text="Budget £5k."), TODAY)
+
+    for run in (escalated, result):
+        [outcome] = run.campaigns
+        assert (outcome.brand, outcome.campaign_name) == ("Loomhouse", None)
+        assert outcome.escalation.reason == "unnamed_campaign"
+        assert outcome.escalation.answer == "amend"
+        assert outcome.escalation.needs == ["campaign_name"]
+
+
+async def test_coordinate_two_campaigns_sharing_a_key_both_escalate_asking_for_an_amend(
+    connect_without_flaws, routing_client, script
+):
+    instagram, website = (
+        {**CAMPAIGN, "deliverables": [{"asset_type": "image", "channel": channel}]}
+        for channel in ("Instagram", "website")
+    )
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(call("c1", "intake"), call("c2", "review", KEY)),
+            INTAKE: script.intake(instagram, website),
+            REVIEW: [],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    assert len(result.campaigns) == 2
+    for outcome in result.campaigns:
+        assert outcome.escalation.reason == "duplicate_campaign"
+        assert outcome.escalation.answer == "amend"
+    assert result.state.escalations == [c.escalation for c in result.campaigns]
+    denied = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
+    assert json.loads(denied["content"])["type"] == "permission_denied"
+    assert client.messages.calls[REVIEW] == []
+
+
+async def test_coordinate_refuses_review_and_handoff_of_a_campaign_while_it_is_being_reviewed(
+    connect_without_flaws, make_message, script
+):
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): coordinator_turns(
+                make_message,
+                [call("c1", "intake")],
+                [call("c2", "review", KEY)],
+                [call("c3", "review", KEY), call("c4", "review", KEY), call("c5", "handoff", KEY)],
+            ),
+            (INTAKE, None): script.intake(CAMPAIGN),
+            (REVIEW, None): 2 * review_of(make_message, "AST-001"),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, BRIEF, today=TODAY)
+
+    reviewed, again, handed = results_of(client, 3)
+    assert "is_error" not in reviewed
+    for refused in (again, handed):
+        assert refused["is_error"] is True
+        assert json.loads(refused["content"])["type"] == "permission_denied"
+    assert len(result.reviews) == 2
+    assert "tracker_create_task" not in recorded.names

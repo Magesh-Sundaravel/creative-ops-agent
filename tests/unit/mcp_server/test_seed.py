@@ -83,3 +83,13 @@ def test_build_server_seed_tasks_with_duplicate_id_raises(tmp_path):
 
     with pytest.raises(ValueError, match=tasks[0]["id"]):
         build_server(tmp_path)
+
+
+def test_build_server_channel_dimensions_not_matching_approved_channels_raises(tmp_path):
+    shutil.copytree(SEED_DIR, tmp_path, dirs_exist_ok=True)
+    brands = json.loads((tmp_path / "brands.json").read_text())
+    del brands[1]["guidelines"]["channel_dimensions"]["youtube"]
+    (tmp_path / "brands.json").write_text(json.dumps(brands))
+
+    with pytest.raises(ValueError, match="stridewell"):
+        build_server(tmp_path)

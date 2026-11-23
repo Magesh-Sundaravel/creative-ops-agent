@@ -31,6 +31,7 @@ class BrandGuidelines(BaseModel):
     donts: list[str]
     mandatory_legal_lines: list[str]
     approved_channels: list[str]
+    channel_dimensions: dict[str, list[str]]
 
 
 class Brand(BaseModel):

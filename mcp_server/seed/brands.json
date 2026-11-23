@@ -26,7 +26,13 @@
         "No saturated or neon colours"
       ],
       "mandatory_legal_lines": ["Loomhouse is a trading name of Loomhouse Ltd."],
-      "approved_channels": ["instagram", "facebook", "website", "email"]
+      "approved_channels": ["instagram", "facebook", "website", "email"],
+      "channel_dimensions": {
+        "instagram": ["1080x1350", "1080x1920"],
+        "facebook": ["1080x1350"],
+        "website": ["2400x1200"],
+        "email": ["1200x600"]
+      }
     }
   },
   {
@@ -56,7 +62,13 @@
         "No competitor products in frame"
       ],
       "mandatory_legal_lines": ["Performance results vary by runner."],
-      "approved_channels": ["tiktok", "instagram", "youtube", "website"]
+      "approved_channels": ["tiktok", "instagram", "youtube", "website"],
+      "channel_dimensions": {
+        "tiktok": ["1080x1920"],
+        "instagram": ["1080x1350"],
+        "youtube": ["1920x1080"],
+        "website": ["2400x1200"]
+      }
     }
   },
   {
@@ -89,7 +101,13 @@
         "Dermatologically tested.",
         "Individual results may vary."
       ],
-      "approved_channels": ["website", "email", "instagram", "pinterest"]
+      "approved_channels": ["website", "email", "instagram", "pinterest"],
+      "channel_dimensions": {
+        "website": ["2400x1200"],
+        "email": ["1200x600"],
+        "instagram": ["1080x1350", "1080x1920"],
+        "pinterest": ["1000x1500"]
+      }
     }
   }
 ]

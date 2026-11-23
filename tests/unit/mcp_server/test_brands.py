@@ -35,6 +35,7 @@ async def test_guidelines_resource_known_brand_returns_its_brand_guidelines_json
     assert guidelines.typography.heading == heading_font
     assert guidelines.palette
     assert guidelines.approved_channels
+    assert guidelines.channel_dimensions.keys() == set(guidelines.approved_channels)
 
 
 async def test_guidelines_resource_is_listed_as_template(connect):

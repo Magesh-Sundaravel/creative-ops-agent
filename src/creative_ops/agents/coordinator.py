@@ -157,6 +157,7 @@ EscalationReason = Literal[
     "not_a_brief",
     "unnamed_campaign",
     "duplicate_campaign",
+    "unmatched_campaign",
     "revisions_requested",
     "run_failed",
     "task_may_exist",
@@ -252,7 +253,11 @@ async def _coordinate(
     today: date | None,
     carried: list[CampaignOutcome],
 ) -> CoordinatorResult:
-    """A Coordinator Run that skips the closed campaigns in `carried` and keeps their outcomes."""
+    """A Coordinator Run that skips the closed campaigns in `carried` and keeps their outcomes.
+
+    Campaigns match `carried` by exact key only. If intake leaves out a closed campaign, any
+    other campaign may be that one under another key, so every one not closed is escalated.
+    """
     intakes: list[IntakeResult] = []
     reviews: list[ReviewResult] = []
     failed_runs: list[FailedRun] = []
@@ -325,6 +330,11 @@ async def _coordinate(
             raise ToolResultError("Intake failed twice; the Brief is escalated to a human. Stop.")
         intakes.append(result)
         counts = Counter((c.brief.brand, c.brief.campaign_name) for c in result.campaigns)
+        left_out = ", ".join(
+            f"{o.brand!r} / {o.campaign_name!r}"
+            for o in carried
+            if (o.brand, o.campaign_name) not in counts
+        )
         summaries: list[CampaignSummary] = []
         for c in result.campaigns:
             key = (c.brief.brand, c.brief.campaign_name)
@@ -346,6 +356,13 @@ async def _coordinate(
                     if key in closed:
                         needs += "; one of them is already closed, so keep its name"
                     outcome.escalation = escalation("duplicate_campaign", [needs])
+                elif left_out:
+                    needs = (
+                        f"Intake left out closed campaign(s) {left_out}, so {key[0]!r} campaign "
+                        f"{key[1]!r} may be one of them under another name. Amend the Brief so "
+                        "intake names each closed campaign exactly."
+                    )
+                    outcome.escalation = escalation("unmatched_campaign", [needs])
                 elif c.critical_missing:
                     outcome.escalation = escalation("missing_critical_field", c.critical_fields)
             summaries.append(

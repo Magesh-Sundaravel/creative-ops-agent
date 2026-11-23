@@ -30,6 +30,39 @@ def fake_client() -> Callable[..., FakeClient]:
     return lambda *responses: FakeClient(list(responses))
 
 
+class RoutingMessages:
+    def __init__(self, routes: dict[str, list[Message]]) -> None:
+        self._routes = {prefix: list(responses) for prefix, responses in routes.items()}
+        self.calls: dict[str, list[dict]] = {prefix: [] for prefix in routes}
+
+    async def create(self, **kwargs) -> Message:
+        system = kwargs.get("system")
+        for prefix, responses in self._routes.items():
+            if isinstance(system, str) and system.startswith(prefix):
+                self.calls[prefix].append(kwargs)
+                if not responses:
+                    raise AssertionError(f"Route {prefix!r} has no scripted responses left")
+                return responses.pop(0)
+        raise AssertionError(f"No route for system prompt {system!r}")
+
+
+class RoutingClient:
+    """Stands in for AsyncAnthropic when several agents share one client.
+
+    Each call goes to the scripted queue whose key its `system` prompt starts with, so
+    concurrent Runs stay deterministic. Calls are recorded per route.
+    """
+
+    def __init__(self, routes: dict[str, list[Message]]) -> None:
+        self.messages = RoutingMessages(routes)
+
+
+@pytest.fixture
+def routing_client() -> Callable[..., RoutingClient]:
+    """Build a routing client: `routing_client({system_prefix: [resp1, ...], ...})`."""
+    return RoutingClient
+
+
 @pytest.fixture
 def make_message() -> Callable[..., Message]:
     """Build an assistant `Message` with the given stop_reason, text, tool calls and token usage.

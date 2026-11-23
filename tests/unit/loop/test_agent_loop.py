@@ -17,7 +17,7 @@ from creative_ops.loop.agent_loop import (
     UnexpectedStopReason,
     run,
 )
-from creative_ops.tools.tool import Tool
+from creative_ops.tools.tool import Tool, ToolResultError
 
 MODEL = "test-model"
 
@@ -370,6 +370,24 @@ async def test_run_handler_exception_becomes_error_result_and_run_continues(
     assert tool_result["tool_use_id"] == "toolu_1"
     assert tool_result["is_error"] is True
     assert "disk on fire" in tool_result["content"]
+
+
+async def test_run_tool_result_error_reaches_model_verbatim_as_error_result(
+    fake_client, make_message
+):
+    async def handler(args: AddInput) -> str:
+        raise ToolResultError('{"type": "not_found"}')
+
+    tool = Tool(name="add", description="Add two integers.", input_model=AddInput, handler=handler)
+    client = fake_client(
+        make_message("tool_use", tool_uses=[ADD_CALL]), make_message("end_turn", text="Noted.")
+    )
+
+    await run(client, "What is 2 + 3?", [tool], model=MODEL)
+
+    [tool_result] = sent_tool_results(client)
+    assert tool_result["is_error"] is True
+    assert tool_result["content"] == '{"type": "not_found"}'
 
 
 async def test_run_unknown_tool_becomes_error_result_and_run_continues(fake_client, make_message):

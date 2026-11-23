@@ -67,3 +67,15 @@ class AssetList(BaseModel):
     """The result of `dam_search_assets`."""
 
     assets: list[Asset]
+
+
+class Task(BaseModel):
+    """A unit of agency work in the project tracker, as `tracker_create_task` returns it."""
+
+    id: str
+    title: str
+    brand: str
+    campaign_name: str
+    description: str
+    due_date: date | None
+    status: str

@@ -69,8 +69,8 @@ uv run python evals/run_evals.py
 2. [x] Raw agent loop (`stop_reason`-driven), one dummy tool, unit tests
 3. [x] Intake agent: brief → `StructuredBrief` via tool use, `missing_fields`
 4. [x] Mock MCP server: DAM + tracker tools, brand guidelines as resources, seed data
-5. [ ] Review + Handoff subagents, least-privilege tool sets  ← CURRENT
-6. [ ] Coordinator: decomposition, parallel subagents, re-plan, escalation gates
+5. [x] Review + Handoff subagents, least-privilege tool sets
+6. [ ] Coordinator: decomposition, parallel subagents, re-plan, escalation gates  ← CURRENT
 7. [ ] Eval harness + first dataset (10–15 briefs)
 8. [ ] FastAPI + Streamlit (submit brief, view trace, approve escalations)
 9. [ ] CI: tests, Ruff, evals, `claude -p` review with structured output

@@ -1,19 +1,31 @@
 """Coordinator: a Brief in, taken through intake, review and handoff (see ADR 0005)."""
 
 from collections import Counter
+from collections.abc import Awaitable, Callable
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from anthropic import AsyncAnthropic
 from mcp import Client
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from creative_ops.agents.handoff import CannotHandoff, HandoffPackage, handoff
-from creative_ops.agents.intake import IntakeResult, intake
-from creative_ops.agents.review import CannotReview, ReviewResult, review
-from creative_ops.loop.agent_loop import LoopResult, run
+from creative_ops.agents.handoff import (
+    CannotHandoff,
+    HandoffIncomplete,
+    HandoffPackage,
+    handoff,
+)
+from creative_ops.agents.intake import IntakeResult, NoValidSubmission, intake
+from creative_ops.agents.review import CannotReview, NoValidReview, ReviewResult, review
+from creative_ops.loop.agent_loop import (
+    LoopResult,
+    MaxIterationsExceeded,
+    TokenUsage,
+    UnexpectedStopReason,
+    run,
+)
 from creative_ops.schemas.brief import StructuredBrief
-from creative_ops.schemas.client_stack import permission_denied
+from creative_ops.schemas.client_stack import Task, ToolError, permission_denied
 from creative_ops.tools.tool import Tool, ToolResultError
 
 SYSTEM_PROMPT = """\
@@ -26,6 +38,76 @@ marked `escalated` is waiting for a human, and one marked `handed_off` or \
 left to do, stop."""
 
 MAX_ITERATIONS = 8
+
+RunFailure = (
+    MaxIterationsExceeded,
+    UnexpectedStopReason,
+    NoValidSubmission,
+    NoValidReview,
+    HandoffIncomplete,
+)
+"""A failed agent Run: retried once automatically, then escalated."""
+
+
+class FailedRun(BaseModel):
+    """The trace of one agent Run that failed."""
+
+    agent: Literal["intake", "review", "handoff"]
+    error: str
+    """The failure's exception name."""
+    messages: list[dict[str, Any]]
+    usage: TokenUsage
+
+
+def _failed_run(
+    agent: Literal["intake", "review", "handoff"],
+    exc: MaxIterationsExceeded
+    | UnexpectedStopReason
+    | NoValidSubmission
+    | NoValidReview
+    | HandoffIncomplete,
+) -> FailedRun:
+    """Record a failed Run from the trace its exception carries."""
+    loop_failure = isinstance(exc, MaxIterationsExceeded | UnexpectedStopReason)
+    trace = exc if loop_failure else exc.loop_result
+    return FailedRun(
+        agent=agent, error=type(exc).__name__, messages=list(trace.messages), usage=trace.usage
+    )
+
+
+class _NoteCreates:
+    """A session that notes whether a Run's `tracker_create_task` may have created a Task."""
+
+    def __init__(self, session: Client) -> None:
+        """Wrap `session`; no create tried yet."""
+        self._session = session
+        self.task_may_exist = False
+        self.task_id: str | None = None
+
+    def __getattr__(self, name: str) -> Any:
+        """Everything but `call_tool` goes straight to the wrapped session."""
+        return getattr(self._session, name)
+
+    async def call_tool(self, name: str, arguments: dict[str, Any], **kwargs: Any) -> Any:
+        """Pass the call on; a create may have written unless its error proves otherwise."""
+        if name != "tracker_create_task":
+            return await self._session.call_tool(name, arguments, **kwargs)
+        before = self.task_may_exist
+        self.task_may_exist = True  # until the outcome is known
+        result = await self._session.call_tool(name, arguments, **kwargs)
+        if not result.is_error:
+            self.task_id = Task.model_validate(result.structured_content).id
+            return result
+        # The same rule as Handoff's own slot: only a ToolError other than
+        # upstream_unavailable proves this call wrote nothing.
+        text = "".join(block.text for block in result.content if block.type == "text")
+        try:
+            written_nothing = ToolError.model_validate_json(text).type != "upstream_unavailable"
+        except ValidationError:
+            written_nothing = False
+        if written_nothing:
+            self.task_may_exist = before
+        return result
 
 
 class NoInput(BaseModel):
@@ -75,6 +157,7 @@ EscalationReason = Literal[
     "unnamed_campaign",
     "duplicate_campaign",
     "revisions_requested",
+    "run_failed",
 ]
 
 
@@ -82,7 +165,7 @@ class Escalation(BaseModel):
     """A decision handed to a human: why, the kind of answer it takes, and what it needs."""
 
     reason: EscalationReason
-    answer: Literal["amend", "acknowledge"]
+    answer: Literal["amend", "acknowledge", "retry"]
     needs: list[str]
     ambiguities: list[str]
 
@@ -126,7 +209,8 @@ class CoordinatorState(BaseModel):
 class CoordinatorResult(BaseModel):
     """Built by code from what the tools recorded, never from the model's final text.
 
-    Every subagent `LoopResult` is in the recorded intakes, reviews and Handoff Packages.
+    Every subagent `LoopResult` is in the recorded intakes, reviews and Handoff Packages,
+    and every failed Run's trace in `failed_runs`.
     """
 
     campaigns: list[CampaignOutcome]
@@ -134,6 +218,7 @@ class CoordinatorResult(BaseModel):
     """A Brief-level Escalation: no campaign could start."""
     intakes: list[IntakeResult]
     reviews: list[ReviewResult]
+    failed_runs: list[FailedRun]
     loop_result: LoopResult | None
     """None when no Coordinator Run happened (an acknowledge)."""
     state: CoordinatorState | None
@@ -157,6 +242,7 @@ async def _coordinate(
     """A Coordinator Run that skips the closed campaigns in `carried` and keeps their outcomes."""
     intakes: list[IntakeResult] = []
     reviews: list[ReviewResult] = []
+    failed_runs: list[FailedRun] = []
     current_review: dict[tuple[str, str], ReviewResult] = {}
     intake_claimed = False
     reviewing: set[tuple[str, str]] = set()
@@ -182,30 +268,47 @@ async def _coordinate(
 
     def escalation(reason: EscalationReason, needs: list[str]) -> Escalation:
         """An Escalation carrying the Brief's Ambiguities."""
+        answers: dict[EscalationReason, Literal["acknowledge", "retry"]] = {
+            "revisions_requested": "acknowledge",
+            "run_failed": "retry",
+        }
         return Escalation(
             reason=reason,
-            answer="acknowledge" if reason == "revisions_requested" else "amend",
+            answer=answers.get(reason, "amend"),
             needs=needs,
-            ambiguities=intakes[-1].ambiguities,
+            ambiguities=intakes[-1].ambiguities if intakes else [],
         )
 
+    async def twice[T](
+        agent: Literal["intake", "review", "handoff"],
+        start: Callable[[], Awaitable[T]],
+        retry: Callable[[], bool] = lambda: True,
+    ) -> T | FailedRun:
+        """Start an agent Run, and once more if it fails and `retry()`; else the last failure."""
+        for attempt in range(2):
+            try:
+                return await start()
+            except RunFailure as exc:
+                failed = _failed_run(agent, exc)
+                failed_runs.append(failed)
+                if attempt == 1 or not retry():
+                    return failed
+        raise AssertionError("unreachable")
+
     async def run_intake(_: NoInput) -> str:
-        """Run Intake, once per Coordinator Run, so briefs never change under review or handoff."""
+        """Run Intake once per Coordinator Run, so briefs never change under review or handoff."""
         nonlocal intake_claimed, brief_escalation
         # Claim intake before the first await, so two calls in one response can't both run.
         if intake_claimed:
             raise ToolResultError(
-                "Intake has already run, or is running, for this Brief. Use its campaigns; "
-                "call intake again only if it failed."
+                "Intake has already run, or is running, for this Brief. Use its campaigns, "
+                "or stop if it failed."
             )
         intake_claimed = True
-        succeeded = False
-        try:
-            result = await intake(client, brief, today)
-            succeeded = True
-        finally:
-            # A failed Run recorded no campaigns, so intake may run again.
-            intake_claimed = succeeded
+        result = await twice("intake", lambda: intake(client, brief, today))
+        if isinstance(result, FailedRun):
+            brief_escalation = escalation("run_failed", [f"Intake failed twice ({result.error})"])
+            raise ToolResultError("Intake failed twice; the Brief is escalated to a human. Stop.")
         intakes.append(result)
         counts = Counter((c.brief.brand, c.brief.campaign_name) for c in result.campaigns)
         summaries: list[CampaignSummary] = []
@@ -260,7 +363,7 @@ async def _coordinate(
             raise ToolResultError(permission_denied("This campaign is already being reviewed."))
         reviewing.add((key.brand, key.campaign_name))
         try:
-            result = await review(client, session, structured, today)
+            result = await twice("review", lambda: review(client, session, structured, today))
         except CannotReview as exc:
             outcomes[(key.brand, key.campaign_name)].escalation = escalation(
                 "cannot_review", [str(exc)]
@@ -268,6 +371,11 @@ async def _coordinate(
             raise ToolResultError(permission_denied(f"Escalated to a human: {exc}")) from exc
         finally:
             reviewing.discard((key.brand, key.campaign_name))
+        if isinstance(result, FailedRun):
+            outcomes[(key.brand, key.campaign_name)].escalation = escalation(
+                "run_failed", [f"Review failed twice ({result.error})"]
+            )
+            raise ToolResultError(permission_denied("Review failed twice; escalated to a human."))
         reviews.append(result)
         current_review[(key.brand, key.campaign_name)] = result
         blocking = [f for f in result.findings if f.severity == "blocking"]
@@ -302,12 +410,35 @@ async def _coordinate(
             raise ToolResultError("Review this campaign before handing it off.")
         # Claim the key before the first await, so two calls in one response can't both run.
         handoff_claimed.add((key.brand, key.campaign_name))
+        noted: list[_NoteCreates] = []
+
+        def start() -> Awaitable[HandoffPackage]:
+            noted.append(_NoteCreates(session))
+            return handoff(client, noted[-1], structured, reviewed)
+
         try:
-            package = await handoff(client, session, structured, reviewed)
+            # Retried only if the failed Run never tried to create a Task, so none can exist.
+            package = await twice("handoff", start, retry=lambda: not noted[-1].task_may_exist)
         except CannotHandoff:
-            # Refused before any Task was created. Any other failure may have created one.
+            # Refused before any Task was created.
             handoff_claimed.discard((key.brand, key.campaign_name))
             raise
+        if isinstance(package, FailedRun):
+            # Stays claimed: a Task may exist.
+            if noted[-1].task_id:
+                needs = (
+                    f"Handoff failed ({package.error}) after creating tracker Task "
+                    f"{noted[-1].task_id}. Check that Task before retrying."
+                )
+            elif noted[-1].task_may_exist:
+                needs = (
+                    f"Handoff failed ({package.error}) after trying to create a tracker Task. "
+                    "Check the tracker for that Task before retrying."
+                )
+            else:
+                needs = f"Handoff failed twice ({package.error})"
+            outcome.escalation = escalation("run_failed", [needs])
+            raise ToolResultError(permission_denied("Handoff failed; escalated to a human."))
         outcomes[(key.brand, key.campaign_name)].handoff = package
         return HandoffSummary(task_id=package.task_id).model_dump_json()
 
@@ -344,6 +475,7 @@ async def _coordinate(
         escalation=brief_escalation,
         intakes=intakes,
         reviews=reviews,
+        failed_runs=failed_runs,
         loop_result=loop_result,
         state=state if state.escalations else None,
     )
@@ -362,6 +494,12 @@ class Acknowledge(BaseModel):
     kind: Literal["acknowledge"] = "acknowledge"
 
 
+class Retry(BaseModel):
+    """A human's answer to a failed-Run Escalation: run the Coordinator again on the Brief."""
+
+    kind: Literal["retry"] = "retry"
+
+
 class AnswerDoesNotFit(ValueError):
     """No open Escalation takes this kind of answer. Nothing was run."""
 
@@ -370,20 +508,21 @@ async def resume(
     client: AsyncAnthropic,
     session: Client,
     state: CoordinatorState,
-    answer: Amend | Acknowledge,
+    answer: Amend | Acknowledge | Retry,
     today: date | None = None,
 ) -> CoordinatorResult:
     """Continue after an Escalation, with an answer that fits at least one open Escalation.
 
-    Amend runs the Coordinator again on the amended Brief. Acknowledge closes every
-    revisions-requested campaign without any Run. Other Escalations stay open either way.
+    Amend runs the Coordinator again on the amended Brief, and Retry on the same Brief, with
+    fresh retry counts; closed campaigns are carried. Acknowledge closes every
+    revisions-requested campaign without any Run. Other Escalations stay open after it.
     """
     if answer.kind not in {e.answer for e in state.escalations}:
         raise AnswerDoesNotFit(f"No open Escalation takes {answer.kind!r}.")
-    if isinstance(answer, Amend):
-        amended = f"{state.brief}\n\n{answer.text}"
+    if isinstance(answer, Amend | Retry):
+        brief = f"{state.brief}\n\n{answer.text}" if isinstance(answer, Amend) else state.brief
         carried = [c for c in state.campaigns if c.closed]
-        return await _coordinate(client, session, amended, today, carried)
+        return await _coordinate(client, session, brief, today, carried)
     campaigns = [
         c.model_copy(update={"escalation": None, "revisions_requested": True})
         if c.escalation is not None and c.escalation.reason == "revisions_requested"
@@ -396,6 +535,7 @@ async def resume(
         escalation=state.escalation,
         intakes=[],
         reviews=[],
+        failed_runs=[],
         loop_result=None,
         state=closed if closed.escalations else None,
     )

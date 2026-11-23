@@ -2,9 +2,11 @@ import json
 import shutil
 from collections.abc import Sequence
 from datetime import date
+from typing import Any
 
 import pytest
 from mcp import Client
+from mcp.types import CallToolResult, TextContent
 
 from creative_ops.agents import coordinator, handoff, intake, review
 from creative_ops.agents.coordinator import (
@@ -12,6 +14,7 @@ from creative_ops.agents.coordinator import (
     Amend,
     AnswerDoesNotFit,
     CoordinatorState,
+    Retry,
     coordinate,
     resume,
 )
@@ -214,32 +217,49 @@ async def test_coordinate_second_intake_in_a_run_is_refused(connect_without_flaw
     assert len(result.intakes) == 1
 
 
-async def test_coordinate_intake_can_run_again_after_its_run_fails(
-    connect_without_flaws, routing_client, make_message
+async def test_coordinate_intake_failing_once_is_retried_without_an_escalation(
+    connect_without_flaws, routing_client, make_message, script
 ):
     client = routing_client(
         {
-            COORDINATOR: [
-                make_message("tool_use", tool_uses=[call("c1", "intake")]),
-                make_message("tool_use", tool_uses=[call("c2", "intake")]),
-                make_message("end_turn"),
-            ],
-            INTAKE: [
-                make_message("end_turn", text="No submission."),
-                make_message(
-                    "tool_use", tool_uses=[call("i1", "submit_brief", {"briefs": [CAMPAIGN]})]
-                ),
-                make_message("end_turn"),
-            ],
+            COORDINATOR: script.coordinator(call("c1", "intake")),
+            INTAKE: [make_message("end_turn", text="No submission."), *script.intake(CAMPAIGN)],
         }
     )
 
     async with connect_without_flaws() as session:
         result = await coordinate(client, session, BRIEF, today=TODAY)
 
-    second = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
-    assert "is_error" not in second
+    first = client.messages.calls[COORDINATOR][1]["messages"][-1]["content"][0]
+    assert "is_error" not in first
     assert len(result.intakes) == 1
+    assert result.escalation is None
+    assert [f.error for f in result.failed_runs] == ["NoValidSubmission"]
+
+
+async def test_coordinate_intake_failing_twice_escalates_the_whole_brief_accepting_retry(
+    connect_without_flaws, routing_client, make_message, script
+):
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(call("c1", "intake"), call("c2", "intake")),
+            INTAKE: [make_message("end_turn", text="No submission.")] * 2,
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    assert result.escalation.reason == "run_failed"
+    assert result.escalation.answer == "retry"
+    assert result.escalation.needs == ["Intake failed twice (NoValidSubmission)"]
+    assert result.escalation.ambiguities == []
+    assert result.campaigns == []
+    for i in (1, 2):  # the intake that escalated, then the model asking again
+        refused = client.messages.calls[COORDINATOR][i]["messages"][-1]["content"][0]
+        assert refused["is_error"] is True
+    assert len(client.messages.calls[INTAKE]) == 2
+    assert result.state.escalations == [result.escalation]
 
 
 async def test_coordinate_two_intakes_in_one_response_run_intake_once(
@@ -805,8 +825,9 @@ async def test_resume_with_acknowledge_closes_campaign_as_revisions_requested_wi
     [
         (CAMPAIGN, [BLOCKING], Amend(text="Due 1 March 2031.")),
         ({**CAMPAIGN, "deadline": None}, [], Acknowledge()),
+        ({**CAMPAIGN, "deadline": None}, [], Retry()),
     ],
-    ids=["amend-on-revisions-requested", "acknowledge-on-missing-field"],
+    ids=["amend-on-revisions-requested", "acknowledge-on-missing-field", "retry-on-missing-field"],
 )
 async def test_resume_with_an_answer_that_does_not_fit_the_escalation_is_rejected(
     connect_without_flaws, routing_client, script, brief_campaign, review_findings, answer
@@ -911,3 +932,222 @@ async def test_resume_with_amend_after_acknowledge_never_reviews_or_hands_off_th
     closed, waiting = result.campaigns
     assert (closed.revisions_requested, closed.handoff) == (True, None)
     assert result.state.escalations == [waiting.escalation]
+
+
+async def test_coordinate_review_failing_once_is_retried_and_reaches_handoff(
+    connect_without_flaws, routing_client, make_message, script
+):
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN),
+            REVIEW: [make_message("end_turn", text="No review."), *script.review()],
+            HANDOFF: script.handoff(),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    assert outcome.escalation is None
+    assert outcome.handoff is not None
+    assert result.state is None
+    assert [(f.agent, f.error) for f in result.failed_runs] == [("review", "NoValidReview")]
+    assert result.failed_runs[0].messages[-1]["content"][0].text == "No review."
+
+
+async def test_coordinate_review_failing_twice_escalates_campaign_accepting_retry(
+    connect_without_flaws, routing_client, make_message, script
+):
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN, ambiguities=["Tone unclear"]),
+            REVIEW: [make_message("end_turn", text="No review.")] * 2,
+            HANDOFF: [],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    assert outcome.escalation.reason == "run_failed"
+    assert outcome.escalation.answer == "retry"
+    assert outcome.escalation.needs == ["Review failed twice (NoValidReview)"]
+    assert outcome.escalation.ambiguities == ["Tone unclear"]
+    assert len(result.failed_runs) == 2
+    refused = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
+    assert refused["is_error"] is True
+    assert json.loads(refused["content"])["type"] == "permission_denied"
+    assert "tracker_create_task" not in recorded.names
+    assert result.state.escalations == [outcome.escalation]
+
+
+async def test_coordinate_handoff_failing_before_creating_a_task_is_retried(
+    connect_without_flaws, routing_client, make_message, script
+):
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN),
+            REVIEW: script.review(),
+            HANDOFF: [make_message("end_turn", text="No handoff."), *script.handoff()],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    assert outcome.escalation is None
+    assert outcome.handoff is not None
+    assert recorded.names.count("tracker_create_task") == 1
+    assert [f.error for f in result.failed_runs] == ["HandoffIncomplete"]
+
+
+async def test_coordinate_handoff_failing_after_creating_a_task_escalates_without_retry(
+    connect_without_flaws, routing_client, make_message, script
+):
+    created_only = [
+        make_message(
+            "tool_use",
+            tool_uses=[call("h1", "tracker_create_task", {"title": "T", "description": "D"})],
+        ),
+        make_message("end_turn", text="Forgot to submit."),
+    ]
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN),
+            REVIEW: script.review(),
+            HANDOFF: created_only,
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(client, recorded, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    [failed] = result.failed_runs
+    created = json.loads(failed.messages[2]["content"][0]["content"])  # the create's result
+    assert outcome.escalation.reason == "run_failed"
+    assert outcome.escalation.answer == "retry"
+    assert outcome.escalation.needs == [
+        f"Handoff failed (HandoffIncomplete) after creating tracker Task {created['id']}. "
+        "Check that Task before retrying."
+    ]
+    assert recorded.names.count("tracker_create_task") == 1
+
+
+async def test_resume_with_retry_runs_the_campaign_again_with_a_fresh_retry_count(
+    connect_without_flaws, routing_client, make_message, script
+):
+    full = [call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)]
+    no_review = make_message("end_turn", text="No review.")
+    client = routing_client(
+        {
+            COORDINATOR: [*script.coordinator(*full[:2]), *script.coordinator(*full)],
+            INTAKE: [*script.intake(CAMPAIGN), *script.intake(CAMPAIGN)],
+            # Fails twice, then once more after the retry: a carried count would escalate.
+            REVIEW: [no_review, no_review, no_review, *script.review()],
+            HANDOFF: script.handoff(),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, BRIEF, today=TODAY)
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, session, state, Retry(), TODAY)
+
+    assert client.messages.calls[INTAKE][2]["messages"][0]["content"].count(BRIEF) == 1
+    [outcome] = result.campaigns
+    assert outcome.escalation is None
+    assert outcome.handoff is not None
+    assert [f.error for f in result.failed_runs] == ["NoValidReview"]
+    assert result.state is None
+
+
+class RejectFirstCreate:
+    """A session whose first `tracker_create_task` comes back as a server ToolError."""
+
+    def __init__(self, session: Client, error_type: str) -> None:
+        self._session = session
+        self._error_type = error_type
+        self._rejected = False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+    async def call_tool(self, name: str, arguments: dict) -> CallToolResult:
+        if name == "tracker_create_task" and not self._rejected:
+            self._rejected = True
+            error = {
+                "type": self._error_type,
+                "message": "The tracker could not create the Task.",
+                "retryable": self._error_type == "upstream_unavailable",
+                "details": {},
+            }
+            return CallToolResult(
+                content=[TextContent(type="text", text=json.dumps(error))], is_error=True
+            )
+        return await self._session.call_tool(name, arguments)
+
+
+@pytest.mark.parametrize(
+    ("error_type", "retried"),
+    [("invalid_input", True), ("upstream_unavailable", False)],
+)
+async def test_coordinate_handoff_whose_create_was_rejected_is_retried_only_if_nothing_was_written(
+    connect_without_flaws, routing_client, make_message, script, error_type, retried
+):
+    rejected_create = [
+        make_message(
+            "tool_use",
+            tool_uses=[call("h1", "tracker_create_task", {"title": "T", "description": "D"})],
+        ),
+        make_message("end_turn", text="Gave up."),
+    ]
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN),
+            REVIEW: script.review(),
+            HANDOFF: [*rejected_create, *script.handoff()],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        result = await coordinate(
+            client, RejectFirstCreate(recorded, error_type), BRIEF, today=TODAY
+        )
+
+    [outcome] = result.campaigns
+    assert [f.error for f in result.failed_runs] == ["HandoffIncomplete"]
+    if retried:
+        assert outcome.escalation is None
+        assert outcome.handoff is not None
+        assert recorded.names.count("tracker_create_task") == 1  # the retry's create only
+    else:
+        assert (outcome.escalation.reason, outcome.escalation.answer) == ("run_failed", "retry")
+        assert recorded.names.count("tracker_create_task") == 0  # rejected before the server
+        assert outcome.escalation.needs == [
+            "Handoff failed (HandoffIncomplete) after trying to create a tracker Task. "
+            "Check the tracker for that Task before retrying."
+        ]
+        assert len(client.messages.calls[HANDOFF]) == 2  # one Handoff Run, not retried

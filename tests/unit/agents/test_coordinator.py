@@ -7,7 +7,14 @@ import pytest
 from mcp import Client
 
 from creative_ops.agents import coordinator, handoff, intake, review
-from creative_ops.agents.coordinator import Amend, CoordinatorState, coordinate, resume
+from creative_ops.agents.coordinator import (
+    Acknowledge,
+    Amend,
+    AnswerDoesNotFit,
+    CoordinatorState,
+    coordinate,
+    resume,
+)
 from creative_ops.loop.agent_loop import MaxIterationsExceeded
 from mcp_server.server import SEED_DIR, build_server
 
@@ -70,18 +77,10 @@ def script(make_message):
             ]
 
         @staticmethod
-        def review() -> list:
+        def review(*findings: dict) -> list:
+            submission = {"findings": list(findings), "coverage": {"0": ["AST-001"]}}
             return [
-                make_message(
-                    "tool_use",
-                    tool_uses=[
-                        call(
-                            "r1",
-                            "submit_review",
-                            {"findings": [], "coverage": {"0": ["AST-001"]}},
-                        )
-                    ],
-                ),
+                make_message("tool_use", tool_uses=[call("r1", "submit_review", submission)]),
                 make_message("end_turn", text="review"),
             ]
 
@@ -724,3 +723,191 @@ async def test_coordinate_refuses_review_and_handoff_of_a_campaign_while_it_is_b
         assert json.loads(refused["content"])["type"] == "permission_denied"
     assert len(result.reviews) == 2
     assert "tracker_create_task" not in recorded.names
+
+
+BLOCKING = {
+    "subject": "AST-001",
+    "rule": "tone",
+    "explanation": "Too dark for a spring launch.",
+    "severity": "blocking",
+}
+
+
+@pytest.fixture
+def rejected_run(routing_client, script):
+    """A client for one campaign whose review requests revisions; then the model hands it off."""
+    return lambda: routing_client(
+        {
+            COORDINATOR: script.coordinator(
+                call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)
+            ),
+            INTAKE: script.intake(CAMPAIGN, ambiguities=["Budget unclear"]),
+            REVIEW: script.review(BLOCKING),
+            HANDOFF: [],
+        }
+    )
+
+
+async def test_coordinate_revisions_requested_escalates_campaign_with_blocking_findings(
+    connect_without_flaws, rejected_run
+):
+    async with connect_without_flaws() as session:
+        result = await coordinate(client := rejected_run(), session, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    assert outcome.handoff is None
+    assert outcome.escalation.reason == "revisions_requested"
+    assert outcome.escalation.answer == "acknowledge"
+    assert outcome.escalation.needs == ["AST-001 (tone): Too dark for a spring launch."]
+    assert outcome.escalation.ambiguities == ["Budget unclear"]
+    assert result.state.escalations == [outcome.escalation]
+    assert len(client.messages.calls[REVIEW]) == 2  # one Review Run, not retried
+
+
+async def test_coordinate_handoff_of_campaign_not_approved_is_permission_denied_and_creates_no_task(
+    connect_without_flaws, rejected_run
+):
+    client = rejected_run()
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        await coordinate(client, recorded, BRIEF, today=TODAY)
+
+    denied = client.messages.calls[COORDINATOR][3]["messages"][-1]["content"][0]
+    assert denied["is_error"] is True
+    assert json.loads(denied["content"])["type"] == "permission_denied"
+    assert client.messages.calls[HANDOFF] == []
+    assert "tracker_create_task" not in recorded.names
+
+
+async def test_resume_with_acknowledge_closes_campaign_as_revisions_requested_without_a_run(
+    connect_without_flaws, rejected_run
+):
+    client = rejected_run()
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, BRIEF, today=TODAY)
+        calls = {route: len(made) for route, made in client.messages.calls.items()}
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, session, state, Acknowledge(), TODAY)
+
+    assert {route: len(made) for route, made in client.messages.calls.items()} == calls
+    [outcome] = result.campaigns
+    assert outcome.revisions_requested is True
+    assert outcome.escalation is None
+    assert outcome.handoff is None
+    assert result.loop_result is None
+    assert result.state is None
+
+
+@pytest.mark.parametrize(
+    ("brief_campaign", "review_findings", "answer"),
+    [
+        (CAMPAIGN, [BLOCKING], Amend(text="Due 1 March 2031.")),
+        ({**CAMPAIGN, "deadline": None}, [], Acknowledge()),
+    ],
+    ids=["amend-on-revisions-requested", "acknowledge-on-missing-field"],
+)
+async def test_resume_with_an_answer_that_does_not_fit_the_escalation_is_rejected(
+    connect_without_flaws, routing_client, script, brief_campaign, review_findings, answer
+):
+    client = routing_client(
+        {
+            COORDINATOR: script.coordinator(call("c1", "intake"), call("c2", "review", KEY)),
+            INTAKE: script.intake(brief_campaign),
+            REVIEW: script.review(*review_findings),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        escalated = await coordinate(client, session, BRIEF, today=TODAY)
+        with pytest.raises(AnswerDoesNotFit):
+            await resume(client, session, escalated.state, answer, TODAY)
+
+
+async def test_resume_with_amend_never_reviews_a_revisions_requested_campaign_again(
+    connect_without_flaws, make_message, script
+):
+    no_deadline = {**CAMPAIGN_2, "deadline": None}
+    both = [call("c2", "review", KEY), call("c3", "review", KEY_2)]
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(make_message, [call("c1", "intake")], [both[0]]),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    both,
+                    [call("c4", "handoff", KEY), call("c5", "handoff", KEY_2)],
+                ),
+            ],
+            (INTAKE, None): [
+                *script.intake(CAMPAIGN, no_deadline),
+                *script.intake(CAMPAIGN, CAMPAIGN_2),
+            ],
+            (REVIEW, "Spring Linen Edit"): script.review(BLOCKING),
+            (REVIEW, "City Miles"): review_of(make_message, "AST-002"),
+            (HANDOFF, "City Miles"): script.handoff(),
+        }
+    )
+    brief = f"{BRIEF} Stridewell, City Miles: a TikTok video."
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, brief, today=TODAY)
+        state = CoordinatorState.model_validate_json(escalated.state.model_dump_json())
+        result = await resume(client, recorded, state, Amend(text="Due 1 June 2030."), TODAY)
+
+    calls = client.messages.calls[(COORDINATOR, None)]
+    for denied in (calls[5]["messages"][-1]["content"][0], calls[6]["messages"][-1]["content"][0]):
+        assert denied["is_error"] is True
+        assert json.loads(denied["content"])["type"] == "permission_denied"
+    assert len(client.messages.calls[(REVIEW, "Spring Linen Edit")]) == 2  # first Run only
+    assert recorded.names.count("tracker_create_task") == 1
+    linen, miles = result.campaigns
+    assert linen.escalation == escalated.campaigns[0].escalation
+    assert miles.handoff is not None
+    assert result.state.escalations == [linen.escalation]
+
+
+async def test_resume_with_amend_after_acknowledge_never_reviews_or_hands_off_that_campaign(
+    connect_without_flaws, make_message, script
+):
+    no_deadline = {**CAMPAIGN_2, "deadline": None}
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message, [call("c1", "intake")], [call("c2", "review", KEY)]
+                ),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY), call("c3", "handoff", KEY)],
+                ),
+            ],
+            (INTAKE, None): 2 * script.intake(CAMPAIGN, no_deadline),
+            (REVIEW, "Spring Linen Edit"): script.review(BLOCKING),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+        acknowledged = await resume(client, recorded, escalated.state, Acknowledge(), TODAY)
+        state = CoordinatorState.model_validate_json(acknowledged.state.model_dump_json())
+        result = await resume(client, recorded, state, Amend(text="Budget £5k."), TODAY)
+
+    calls = client.messages.calls[(COORDINATOR, None)]
+    linen, miles = json.loads(calls[4]["messages"][-1]["content"][0]["content"])["campaigns"]
+    assert (linen["revisions_requested"], linen["escalated"]) == (True, False)
+    assert (miles["revisions_requested"], miles["escalated"]) == (False, True)
+    review_denied, handoff_denied = calls[5]["messages"][-1]["content"]
+    for denied in (review_denied, handoff_denied):
+        assert denied["is_error"] is True
+        assert json.loads(denied["content"])["type"] == "permission_denied"
+    assert len(client.messages.calls[(REVIEW, "Spring Linen Edit")]) == 2  # first Run only
+    assert "tracker_create_task" not in recorded.names
+    closed, waiting = result.campaigns
+    assert (closed.revisions_requested, closed.handoff) == (True, None)
+    assert result.state.escalations == [waiting.escalation]

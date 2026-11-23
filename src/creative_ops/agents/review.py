@@ -9,7 +9,7 @@ from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
 
 from creative_ops.loop.agent_loop import LoopResult, run
 from creative_ops.schemas.brief import StructuredBrief
-from creative_ops.schemas.client_stack import AssetList, BrandGuidelines, BrandRef
+from creative_ops.schemas.client_stack import Asset, AssetList, BrandGuidelines, BrandRef
 from creative_ops.tools.mcp_adapter import call_tool, read_resource
 from creative_ops.tools.tool import Tool
 
@@ -17,6 +17,10 @@ SYSTEM_PROMPT = """\
 You are a review agent for a creative agency. Review the campaign's Assets against the \
 Structured Brief and the brand's Brand Guidelines, then record your review by calling \
 `submit_review`. Today's date is {today}.
+
+The <check_findings> are blocking Findings that code has already recorded from the \
+Assets' metadata (status, approved channels, Usage Rights channels and expiry, \
+dimensions). Treat them as facts and don't repeat them in your submission.
 
 Judge:
 - each Asset's territories against the brief's Usage Rights
@@ -50,8 +54,8 @@ def _index_to_int(value: Any) -> Any:
     return int(value) if isinstance(value, str) and value.isdigit() else value
 
 
-class Finding(BaseModel):
-    """One problem with an Asset, or a deliverable with no covering Asset."""
+class SubmittedFinding(BaseModel):
+    """One problem the model reports: with an Asset, or a deliverable with no covering Asset."""
 
     subject: Annotated[str | int, BeforeValidator(_index_to_int)] = Field(
         description='The Asset id (e.g. "AST-009"), or the deliverable index (e.g. 0).'
@@ -61,10 +65,16 @@ class Finding(BaseModel):
     severity: Literal["blocking", "advisory"]
 
 
+class Finding(SubmittedFinding):
+    """A Finding, marked with whether code's checks or the model's judgement produced it."""
+
+    source: Literal["check", "judgement"]
+
+
 class SubmitReview(BaseModel):
     """Input of the `submit_review` tool."""
 
-    findings: list[Finding]
+    findings: list[SubmittedFinding]
     coverage: dict[int, list[str]] = Field(
         description="For every deliverable index, the ids of the Assets that cover it "
         "(an empty list if none do)."
@@ -88,6 +98,56 @@ async def _resolve_brand(session: Client, brand: str) -> str:
         if brand.casefold() in (ref.slug.casefold(), ref.display_name.casefold()):
             return ref.slug
     raise CannotReview(f"Brand {brand!r} is not a known client brand")
+
+
+def _check_assets(assets: list[Asset], guidelines: BrandGuidelines, cutoff: date) -> list[Finding]:
+    """A blocking `check` Finding for every rule an Asset's metadata breaks (ADR 0003).
+
+    `cutoff` is the date the Usage Rights must last until: the deadline, or today.
+    """
+    findings = []
+    for asset in assets:
+        rights = asset.usage_rights
+        allowed_dimensions = guidelines.channel_dimensions.get(asset.channel)
+        failures = [
+            (asset.status != "final", "status", f"Asset is {asset.status!r}, not 'final'."),
+            (
+                asset.channel not in guidelines.approved_channels,
+                "approved_channel",
+                f"Channel {asset.channel!r} is not one of the brand's approved channels "
+                f"{guidelines.approved_channels}.",
+            ),
+            (
+                asset.channel not in rights.channels,
+                "rights_channel",
+                f"Usage Rights cover {rights.channels}, not the Asset's channel {asset.channel!r}.",
+            ),
+            (
+                rights.expires_on < cutoff,
+                "rights_expiry",
+                f"Usage Rights expire on {rights.expires_on}, before {cutoff}.",
+            ),
+            (
+                # An unapproved channel has no spec; that is already its own Finding.
+                allowed_dimensions is not None
+                and asset.format_or_dimensions not in allowed_dimensions,
+                "dimensions",
+                f"{asset.format_or_dimensions} is not an allowed size for {asset.channel} "
+                f"{allowed_dimensions}.",
+            ),
+        ]
+        findings += [
+            Finding(
+                subject=asset.id,
+                rule=rule,
+                explanation=explanation,
+                severity="blocking",
+                source="check",
+            )
+            for failed, rule, explanation in failures
+            if failed
+        ]
+    return findings
 
 
 def _check_submission(args: SubmitReview, deliverables: int, asset_ids: set[str]) -> None:
@@ -140,6 +200,7 @@ async def review(
         session, f"brand://guidelines/{brand}", TypeAdapter(BrandGuidelines)
     )
     asset_ids = {asset.id for asset in found.assets}
+    checks = _check_assets(found.assets, guidelines, brief.deadline or today)
     submissions: list[SubmitReview] = []
 
     async def handler(args: SubmitReview) -> str:
@@ -162,7 +223,9 @@ async def review(
     prompt = (
         f"<structured_brief>\n{brief.model_dump_json(indent=2)}\n</structured_brief>\n"
         f"<brand_guidelines>\n{guidelines.model_dump_json(indent=2)}\n</brand_guidelines>\n"
-        f"<assets>\n{found.model_dump_json(indent=2)}\n</assets>"
+        f"<assets>\n{found.model_dump_json(indent=2)}\n</assets>\n"
+        f"<check_findings>\n{TypeAdapter(list[Finding]).dump_json(checks, indent=2).decode()}\n"
+        "</check_findings>"
     )
     loop_result = await run(
         client, prompt, [tool], system=SYSTEM_PROMPT.format(today=today.isoformat())
@@ -170,10 +233,11 @@ async def review(
     if not submissions:
         raise NoValidReview(loop_result)
     last = submissions[-1]
-    blocking = any(f.severity == "blocking" for f in last.findings)
+    findings = checks + [Finding(**f.model_dump(), source="judgement") for f in last.findings]
+    blocking = any(f.severity == "blocking" for f in findings)
     return ReviewResult(
         brand=brand,
-        findings=last.findings,
+        findings=findings,
         coverage=last.coverage,
         verdict="revisions_requested" if blocking else "approved",
         loop_result=loop_result,

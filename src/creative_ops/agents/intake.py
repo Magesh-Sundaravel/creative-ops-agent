@@ -42,10 +42,11 @@ class NoValidSubmission(RuntimeError):
 
 
 class CampaignIntake(BaseModel):
-    """One campaign's Structured Brief and its Missing Fields."""
+    """One campaign's Structured Brief, its Missing Fields and which of them are critical."""
 
     brief: StructuredBrief
     missing_fields: list[str]
+    critical_fields: list[str]
     critical_missing: bool
 
 
@@ -117,5 +118,6 @@ def _campaign(brief: StructuredBrief) -> CampaignIntake:
     return CampaignIntake(
         brief=brief,
         missing_fields=[path for path, _ in missing],
+        critical_fields=[path for path, critical in missing if critical],
         critical_missing=any(critical for _, critical in missing),
     )

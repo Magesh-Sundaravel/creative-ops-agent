@@ -238,6 +238,16 @@ async def test_missing_critical_field_sets_critical_missing(fake_client, make_me
     assert result.campaigns[0].critical_missing is True
 
 
+async def test_critical_fields_lists_only_the_missing_critical_field_paths(
+    fake_client, make_message
+):
+    brief = {**COMPLETE, "deadline": None, "deliverables": [{"asset_type": "reel"}]}
+
+    result = await submit_and_intake(fake_client, make_message, brief)
+
+    assert result.campaigns[0].critical_fields == ["deliverables[0].channel", "deadline"]
+
+
 async def test_missing_deliverable_due_date_is_not_critical(fake_client, make_message):
     result = await submit_and_intake(fake_client, make_message, COMPLETE)
 

@@ -9,7 +9,14 @@ from pydantic import BaseModel, Field, TypeAdapter
 from creative_ops.agents.review import Finding, ReviewResult
 from creative_ops.loop.agent_loop import LoopResult, run
 from creative_ops.schemas.brief import Deliverable, StructuredBrief
-from creative_ops.schemas.client_stack import Asset, AssetList, BrandGuidelines, Task, ToolError
+from creative_ops.schemas.client_stack import (
+    Asset,
+    AssetList,
+    BrandGuidelines,
+    Task,
+    ToolError,
+    permission_denied,
+)
 from creative_ops.tools.mcp_adapter import ClientStackError, call_tool, mcp_tools, read_resource
 from creative_ops.tools.tool import Tool, ToolResultError
 
@@ -96,13 +103,6 @@ class HandoffPackage(HandoffFacts):
     loop_result: LoopResult
 
 
-def _denied(message: str) -> str:
-    """A `permission_denied` ToolError, as JSON, for a write the Gate refuses."""
-    return ToolError(
-        type="permission_denied", message=message, retryable=False, details={}
-    ).model_dump_json()
-
-
 def _shared(lists: list[list[str]]) -> list[str]:
     """The items in every list, in the order of the first."""
     first, *rest = lists
@@ -168,12 +168,14 @@ async def handoff(
         nonlocal slot_taken
         if review.verdict != "approved":
             raise ToolResultError(
-                _denied(f"Review Verdict is {review.verdict!r}; only approved work is handed off.")
+                permission_denied(
+                    f"Review Verdict is {review.verdict!r}; only approved work is handed off."
+                )
             )
         # Take the slot before the first await, so concurrent calls in one response can't race.
         if slot_taken:
             raise ToolResultError(
-                _denied(
+                permission_denied(
                     "This Run has already used its one tracker_create_task call, or that call's "
                     "outcome is unknown. Do not create another Task; call submit_handoff."
                 )

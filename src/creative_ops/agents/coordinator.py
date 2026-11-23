@@ -315,11 +315,15 @@ async def _coordinate(
         for c in result.campaigns:
             key = (c.brief.brand, c.brief.campaign_name)
             briefs[key] = c.brief
-            # Closed in an earlier Coordinator Run, so skipped, unless the key is now shared.
-            if not (key in closed and counts[key] == 1):
+            # Closed before this Run (carried), so skipped, unless the key is now shared:
+            # then each new campaign is recorded and escalated, and the closed one still gates.
+            if key in closed and counts[key] == 1:
+                outcome = outcomes[key]
+            else:
                 outcome = CampaignOutcome(brand=key[0], campaign_name=key[1])
                 recorded.append(outcome)
-                outcomes[key] = outcome
+                if key not in closed:
+                    outcomes[key] = outcome
                 if c.brief.campaign_name is None:
                     # Never guessed at: the name is how campaigns match across Intake runs.
                     outcome.escalation = escalation("unnamed_campaign", ["campaign_name"])
@@ -335,7 +339,7 @@ async def _coordinate(
                     brand=str(key[0]),
                     campaign_name=str(key[1]),
                     missing_fields=c.missing_fields,
-                    escalated=outcomes[key].escalation is not None,
+                    escalated=outcome.escalation is not None,
                     handed_off=key in handoff_claimed,
                     revisions_requested=outcomes[key].revisions_requested,
                 )

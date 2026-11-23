@@ -19,6 +19,7 @@ from creative_ops.agents.coordinator import (
     resume,
 )
 from creative_ops.loop.agent_loop import MaxIterationsExceeded
+from creative_ops.schemas.client_stack import permission_denied
 from mcp_server.server import SEED_DIR, build_server
 
 TODAY = date(2030, 1, 15)
@@ -932,6 +933,63 @@ async def test_resume_with_amend_after_acknowledge_never_reviews_or_hands_off_th
     closed, waiting = result.campaigns
     assert (closed.revisions_requested, closed.handoff) == (True, None)
     assert result.state.escalations == [waiting.escalation]
+
+
+async def test_resume_with_amend_duplicating_a_closed_key_keeps_that_campaign_closed(
+    connect_without_flaws, make_message, script
+):
+    no_deadline = {**CAMPAIGN_2, "deadline": None}
+    client = CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message, [call("c1", "intake")], [call("c2", "review", KEY)]
+                ),
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY), call("c3", "handoff", KEY)],
+                ),
+            ],
+            (INTAKE, None): [
+                *script.intake(CAMPAIGN, no_deadline),
+                *script.intake(CAMPAIGN, CAMPAIGN, no_deadline),
+            ],
+            (REVIEW, "Spring Linen Edit"): script.review(BLOCKING),
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, TWO_CAMPAIGNS, today=TODAY)
+        acknowledged = await resume(client, recorded, escalated.state, Acknowledge(), TODAY)
+        result = await resume(
+            client, recorded, acknowledged.state, Amend(text="Budget £5k."), TODAY
+        )
+
+    calls = client.messages.calls[(COORDINATOR, None)]
+    *linens, _ = json.loads(calls[4]["messages"][-1]["content"][0]["content"])["campaigns"]
+    assert [c["revisions_requested"] for c in linens] == [True, True]
+    review_denied, handoff_denied = calls[5]["messages"][-1]["content"]
+    for denied, message in (
+        (review_denied, "This campaign is closed: revisions requested."),
+        (handoff_denied, "This campaign is escalated to a human, or closed."),
+    ):
+        assert denied["is_error"] is True
+        assert json.loads(denied["content"]) == json.loads(permission_denied(message))
+    assert len(client.messages.calls[(REVIEW, "Spring Linen Edit")]) == 2  # first Run only
+    assert "tracker_create_task" not in recorded.names
+    closed, *duplicates, _ = result.campaigns
+    assert closed.revisions_requested is True
+    assert len(duplicates) == 2
+    for outcome in duplicates:
+        assert outcome.escalation.reason == "duplicate_campaign"
+        assert "already closed" in outcome.escalation.needs[0]
+    assert [e.reason for e in result.state.escalations] == [
+        "duplicate_campaign",
+        "duplicate_campaign",
+        "missing_critical_field",
+    ]
 
 
 async def test_coordinate_review_failing_once_is_retried_and_reaches_handoff(

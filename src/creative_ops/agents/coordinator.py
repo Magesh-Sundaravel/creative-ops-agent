@@ -79,12 +79,13 @@ async def coordinate(
     """Take a Brief through intake, review and handoff."""
     intakes: list[IntakeResult] = []
     reviews: list[ReviewResult] = []
-    # The current review of each campaign; a new intake makes every earlier review stale.
     current_review: dict[tuple[str, str], ReviewResult] = {}
     handoffs: list[HandoffPackage] = []
+    intake_claimed = False
     briefs: dict[tuple[str | None, str | None], StructuredBrief] = {}
 
     def campaign(key: CampaignKey) -> StructuredBrief:
+        """The Structured Brief intake returned for this campaign."""
         found = briefs.get((key.brand, key.campaign_name))
         if found is None:
             raise ToolResultError(
@@ -94,10 +95,23 @@ async def coordinate(
         return found
 
     async def run_intake(_: NoInput) -> str:
-        result = await intake(client, brief, today)
+        """Run Intake, once per Coordinator Run, so briefs never change under review or handoff."""
+        nonlocal intake_claimed
+        # Claim intake before the first await, so two calls in one response can't both run.
+        if intake_claimed:
+            raise ToolResultError(
+                "Intake has already run, or is running, for this Brief. Use its campaigns; "
+                "call intake again only if it failed."
+            )
+        intake_claimed = True
+        succeeded = False
+        try:
+            result = await intake(client, brief, today)
+            succeeded = True
+        finally:
+            # A failed Run recorded no campaigns, so intake may run again.
+            intake_claimed = succeeded
         intakes.append(result)
-        briefs.clear()
-        current_review.clear()
         briefs.update({(c.brief.brand, c.brief.campaign_name): c.brief for c in result.campaigns})
         return IntakeSummary(
             campaigns=[
@@ -112,6 +126,7 @@ async def coordinate(
         ).model_dump_json()
 
     async def run_review(key: CampaignKey) -> str:
+        """Run Review on one campaign and record its result."""
         result = await review(client, session, campaign(key), today)
         reviews.append(result)
         current_review[(key.brand, key.campaign_name)] = result
@@ -121,10 +136,11 @@ async def coordinate(
         ).model_dump_json()
 
     async def run_handoff(key: CampaignKey) -> str:
+        """Run Handoff on one reviewed campaign and record its Handoff Package."""
         structured = campaign(key)
         reviewed = current_review.get((key.brand, key.campaign_name))
         if reviewed is None:
-            raise ToolResultError("Review this campaign since its latest intake first.")
+            raise ToolResultError("Review this campaign before handing it off.")
         package = await handoff(client, session, structured, reviewed)
         handoffs.append(package)
         return HandoffSummary(task_id=package.task_id).model_dump_json()

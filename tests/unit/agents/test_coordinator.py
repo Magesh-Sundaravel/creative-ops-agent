@@ -51,7 +51,6 @@ def clean_run(routing_client, make_message):
     """A client scripted for one clean campaign: intake, review, handoff, then done.
 
     `clean_run(*calls)` scripts the Coordinator with those calls, one per response, instead.
-    Intake can run twice; each Run submits the same campaign.
     """
     default = [call("c1", "intake"), call("c2", "review", KEY), call("c3", "handoff", KEY)]
     return lambda *calls: routing_client(
@@ -60,8 +59,7 @@ def clean_run(routing_client, make_message):
                 *(make_message("tool_use", tool_uses=[c]) for c in calls or default),
                 make_message("end_turn", text="All done."),
             ],
-            INTAKE: 2
-            * [
+            INTAKE: [
                 make_message(
                     "tool_use",
                     tool_uses=[call("i1", "submit_brief", {"briefs": [CAMPAIGN]})],
@@ -172,21 +170,81 @@ async def test_coordinate_hitting_its_iteration_cap_raises(
     assert raised.value.max_iterations == 8
 
 
-async def test_coordinate_handoff_after_a_new_intake_is_refused_until_reviewed_again(
+async def test_coordinate_second_intake_in_a_run_is_refused(connect_without_flaws, clean_run):
+    client = clean_run(call("c1", "intake"), call("c2", "intake"))
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    second = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
+    assert second["is_error"] is True
+    assert len(result.intakes) == 1
+
+
+async def test_coordinate_intake_can_run_again_after_its_run_fails(
+    connect_without_flaws, routing_client, make_message
+):
+    client = routing_client(
+        {
+            COORDINATOR: [
+                make_message("tool_use", tool_uses=[call("c1", "intake")]),
+                make_message("tool_use", tool_uses=[call("c2", "intake")]),
+                make_message("end_turn"),
+            ],
+            INTAKE: [
+                make_message("end_turn", text="No submission."),
+                make_message(
+                    "tool_use", tool_uses=[call("i1", "submit_brief", {"briefs": [CAMPAIGN]})]
+                ),
+                make_message("end_turn"),
+            ],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    second = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
+    assert "is_error" not in second
+    assert len(result.intakes) == 1
+
+
+async def test_coordinate_two_intakes_in_one_response_run_intake_once(
+    connect_without_flaws, routing_client, make_message
+):
+    client = routing_client(
+        {
+            COORDINATOR: [
+                make_message("tool_use", tool_uses=[call("c1", "intake"), call("c2", "intake")]),
+                make_message("end_turn"),
+            ],
+            INTAKE: 2
+            * [
+                make_message(
+                    "tool_use", tool_uses=[call("i1", "submit_brief", {"briefs": [CAMPAIGN]})]
+                ),
+                make_message("end_turn"),
+            ],
+        }
+    )
+
+    async with connect_without_flaws() as session:
+        result = await coordinate(client, session, BRIEF, today=TODAY)
+
+    assert len(client.messages.calls[INTAKE]) == 2  # one Intake Run: submit, then end_turn
+    assert len(result.intakes) == 1
+
+
+async def test_coordinate_handoff_before_review_is_refused_and_creates_no_task(
     connect_without_flaws, clean_run
 ):
-    client = clean_run(
-        call("c1", "intake"),
-        call("c2", "review", KEY),
-        call("c3", "intake"),
-        call("c4", "handoff", KEY),
-    )
+    client = clean_run(call("c1", "intake"), call("c2", "handoff", KEY))
 
     async with connect_without_flaws() as session:
         recorded = RecordCalls(session)
         result = await coordinate(client, recorded, BRIEF, today=TODAY)
 
-    handoff_result = client.messages.calls[COORDINATOR][4]["messages"][-1]["content"][0]
-    assert handoff_result["is_error"] is True
+    refused = client.messages.calls[COORDINATOR][2]["messages"][-1]["content"][0]
+    assert refused["is_error"] is True
     assert result.handoffs == []
     assert "tracker_create_task" not in recorded.names

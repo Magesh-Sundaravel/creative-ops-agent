@@ -40,6 +40,8 @@ class RoutingMessages:
         for prefix, responses in self._routes.items():
             if isinstance(system, str) and system.startswith(prefix):
                 self.calls[prefix].append(kwargs)
+                if not responses:
+                    raise AssertionError(f"Route {prefix!r} has no scripted responses left")
                 return responses.pop(0)
         raise AssertionError(f"No route for system prompt {system!r}")
 

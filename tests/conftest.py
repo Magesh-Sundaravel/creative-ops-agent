@@ -2,6 +2,9 @@ from collections.abc import Callable, Sequence
 
 import pytest
 from anthropic.types import Message
+from mcp import Client
+
+from mcp_server.server import build_server
 
 
 class FakeMessages:
@@ -55,3 +58,13 @@ def make_message() -> Callable[..., Message]:
         )
 
     return _make
+
+
+@pytest.fixture
+def connect() -> Callable[[], Client]:
+    """Open a real MCP client session, in memory, to a freshly built server.
+
+    Use as `async with connect() as client:`. Entered inside the test rather than yielded
+    from the fixture, because anyio requires the session to close in the task that opened it.
+    """
+    return lambda: Client(build_server())

@@ -158,7 +158,11 @@ EscalationReason = Literal[
     "duplicate_campaign",
     "revisions_requested",
     "run_failed",
+    "task_may_exist",
 ]
+
+CLOSING_REASONS: set[EscalationReason] = {"revisions_requested", "task_may_exist"}
+"""Escalations an acknowledge closes; each names the `CampaignOutcome` flag it sets."""
 
 
 class Escalation(BaseModel):
@@ -179,14 +183,19 @@ class CampaignOutcome(BaseModel):
     escalation: Escalation | None = None
     revisions_requested: bool = False
     """Closed as revisions requested, once a human acknowledged its Escalation."""
+    task_may_exist: bool = False
+    """Closed against a Task a failed Handoff may have created, once a human acknowledged it."""
+    task_id: str | None = None
+    """The Task a failed Handoff created, when known."""
 
     @property
     def closed(self) -> bool:
-        """Handed off or revisions requested: skipped after re-intake, and never re-run."""
+        """Handed off, or one of the closing Escalations: skipped after re-intake, never re-run."""
         return (
             self.handoff is not None
             or self.revisions_requested
-            or (self.escalation is not None and self.escalation.reason == "revisions_requested")
+            or self.task_may_exist
+            or (self.escalation is not None and self.escalation.reason in CLOSING_REASONS)
         )
 
 
@@ -247,7 +256,9 @@ async def _coordinate(
     intake_claimed = False
     reviewing: set[tuple[str, str]] = set()
     closed = {(o.brand, o.campaign_name) for o in carried}
-    handoff_claimed = {(o.brand, o.campaign_name) for o in carried if o.handoff is not None}
+    handoff_claimed = {
+        (o.brand, o.campaign_name) for o in carried if o.handoff is not None or o.task_may_exist
+    }
     briefs: dict[tuple[str | None, str | None], StructuredBrief] = {}
     recorded = list(carried)
     """Every campaign's outcome, carried ones first; two campaigns may share a key."""
@@ -271,6 +282,7 @@ async def _coordinate(
         answers: dict[EscalationReason, Literal["acknowledge", "retry"]] = {
             "revisions_requested": "acknowledge",
             "run_failed": "retry",
+            "task_may_exist": "acknowledge",
         }
         return Escalation(
             reason=reason,
@@ -428,20 +440,30 @@ async def _coordinate(
             handoff_claimed.discard((key.brand, key.campaign_name))
             raise
         if isinstance(package, FailedRun):
-            # Stays claimed: a Task may exist.
+            # Stays claimed: a Task may exist. Then never re-run, so the human closes it.
+            outcome.task_id = noted[-1].task_id
             if noted[-1].task_id:
-                needs = (
-                    f"Handoff failed ({package.error}) after creating tracker Task "
-                    f"{noted[-1].task_id}. Check that Task before retrying."
+                outcome.escalation = escalation(
+                    "task_may_exist",
+                    [
+                        f"Handoff failed ({package.error}) after creating tracker Task "
+                        f"{noted[-1].task_id}. Check that Task, then acknowledge to close the "
+                        "campaign against it."
+                    ],
                 )
             elif noted[-1].task_may_exist:
-                needs = (
-                    f"Handoff failed ({package.error}) after trying to create a tracker Task. "
-                    "Check the tracker for that Task before retrying."
+                outcome.escalation = escalation(
+                    "task_may_exist",
+                    [
+                        f"Handoff failed ({package.error}) after trying to create a tracker "
+                        "Task. Check the tracker for that Task, then acknowledge to close the "
+                        "campaign."
+                    ],
                 )
             else:
-                needs = f"Handoff failed twice ({package.error})"
-            outcome.escalation = escalation("run_failed", [needs])
+                outcome.escalation = escalation(
+                    "run_failed", [f"Handoff failed twice ({package.error})"]
+                )
             raise ToolResultError(permission_denied("Handoff failed; escalated to a human."))
         outcomes[(key.brand, key.campaign_name)].handoff = package
         return HandoffSummary(task_id=package.task_id).model_dump_json()
@@ -493,7 +515,10 @@ class Amend(BaseModel):
 
 
 class Acknowledge(BaseModel):
-    """A human's answer to a revisions-requested Escalation: close the campaign, re-run nothing."""
+    """A human's answer to a revisions-requested or task-may-exist Escalation.
+
+    Closes the campaign and re-runs nothing.
+    """
 
     kind: Literal["acknowledge"] = "acknowledge"
 
@@ -519,7 +544,8 @@ async def resume(
 
     Amend runs the Coordinator again on the amended Brief, and Retry on the same Brief, with
     fresh retry counts; closed campaigns are carried. Acknowledge closes every
-    revisions-requested campaign without any Run. Other Escalations stay open after it.
+    revisions-requested or task-may-exist campaign without any Run. Other Escalations stay
+    open after it.
     """
     if answer.kind not in {e.answer for e in state.escalations}:
         raise AnswerDoesNotFit(f"No open Escalation takes {answer.kind!r}.")
@@ -528,8 +554,8 @@ async def resume(
         carried = [c for c in state.campaigns if c.closed]
         return await _coordinate(client, session, brief, today, carried)
     campaigns = [
-        c.model_copy(update={"escalation": None, "revisions_requested": True})
-        if c.escalation is not None and c.escalation.reason == "revisions_requested"
+        c.model_copy(update={"escalation": None, c.escalation.reason: True})
+        if c.escalation is not None and c.escalation.reason in CLOSING_REASONS
         else c
         for c in state.campaigns
     ]

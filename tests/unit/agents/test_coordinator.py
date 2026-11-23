@@ -666,6 +666,99 @@ async def test_resume_skips_a_campaign_already_handed_off_and_creates_no_duplica
     assert result.state is None
 
 
+RENAMED = {**KEY, "campaign_name": "Spring Linen edit"}
+RENAMED_CAMPAIGN = {**CAMPAIGN, **RENAMED}
+
+
+@pytest.fixture
+def amended(make_message, script):
+    """Spring Linen Edit is handed off and City Miles escalates; then each later intake returns
+    the given Structured Briefs, and each later Coordinator Run tries to review and hand off
+    Spring Linen Edit renamed, and City Miles.
+    """
+    rerun = coordinator_turns(
+        make_message,
+        [call("c1", "intake")],
+        [call("c2", "review", RENAMED), call("c3", "review", KEY_2)],
+        [call("c4", "handoff", RENAMED), call("c5", "handoff", KEY_2)],
+    )
+    return lambda *intakes: CampaignRoutingClient(
+        {
+            (COORDINATOR, None): [
+                *coordinator_turns(
+                    make_message,
+                    [call("c1", "intake")],
+                    [call("c2", "review", KEY)],
+                    [call("c3", "handoff", KEY)],
+                ),
+                *len(intakes) * rerun,
+            ],
+            (INTAKE, None): [
+                *script.intake(CAMPAIGN, {**CAMPAIGN_2, "deadline": None}),
+                *(m for briefs in intakes for m in script.intake(*briefs)),
+            ],
+            # Before "Spring Linen Edit": the renamed Run's Assets still name that campaign.
+            (REVIEW, "Spring Linen edit"): review_of(make_message, "AST-001"),
+            (HANDOFF, "Spring Linen edit"): script.handoff(),
+            (REVIEW, "Spring Linen Edit"): review_of(make_message, "AST-001"),
+            (REVIEW, "City Miles"): review_of(make_message, "AST-002"),
+            (HANDOFF, "Spring Linen Edit"): script.handoff(),
+            (HANDOFF, "City Miles"): script.handoff(),
+        }
+    )
+
+
+AMENDED_BRIEF = f"{BRIEF} Stridewell, City Miles: a TikTok video."
+
+
+@pytest.mark.parametrize(
+    "reintake",
+    [(RENAMED_CAMPAIGN, CAMPAIGN_2), ({**CAMPAIGN, **KEY_2},)],
+    ids=["renamed", "under-another-campaigns-name"],
+)
+async def test_resume_with_amend_leaving_out_a_handed_off_campaign_escalates_every_other(
+    connect_without_flaws, amended, reintake
+):
+    client = amended(reintake)
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        escalated = await coordinate(client, recorded, AMENDED_BRIEF, today=TODAY)
+        result = await resume(client, recorded, escalated.state, Amend(text="Due 1 June 2030."))
+
+    assert recorded.names.count("tracker_create_task") == 1  # Spring Linen Edit, in Run 1
+    assert client.messages.calls[(REVIEW, "Spring Linen edit")] == []
+    assert client.messages.calls[(REVIEW, "City Miles")] == []
+    linen, *others = result.campaigns
+    assert linen.handoff is not None
+    assert [(o.brand, o.campaign_name) for o in others] == [
+        (b["brand"], b["campaign_name"]) for b in reintake
+    ]
+    for outcome in others:
+        assert outcome.escalation.reason == "unmatched_campaign"
+        assert outcome.escalation.answer == "amend"
+        assert "'Loomhouse' / 'Spring Linen Edit'" in outcome.escalation.needs[0]
+
+
+async def test_resume_with_amend_naming_the_left_out_campaign_again_hands_off_the_rest(
+    connect_without_flaws, amended
+):
+    client = amended((RENAMED_CAMPAIGN, CAMPAIGN_2), (CAMPAIGN, CAMPAIGN_2))
+
+    async with connect_without_flaws() as session:
+        recorded = RecordCalls(session)
+        state = (await coordinate(client, recorded, AMENDED_BRIEF, today=TODAY)).state
+        for text in ("Due 1 June 2030.", "The linen campaign is Spring Linen Edit."):
+            result = await resume(client, recorded, state, Amend(text=text))
+            state = result.state
+
+    assert recorded.names.count("tracker_create_task") == 2  # Spring Linen Edit, City Miles
+    linen, miles = result.campaigns
+    assert linen.handoff is not None
+    assert miles.handoff is not None
+    assert result.state is None
+
+
 async def test_campaign_with_no_name_escalates_and_again_after_an_amend(
     connect_without_flaws, routing_client, script
 ):

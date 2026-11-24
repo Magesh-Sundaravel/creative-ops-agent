@@ -43,14 +43,14 @@ jobs:
           git diff "origin/$BASE_REF...HEAD" > pr.diff
           claude -p "$(cat .github/pr-review/prompt.md)" \
             --model claude-haiku-5-5 \
-            --allowedTools "Read" "Grep" "Glob" "Bash(git diff:*)" "Bash(git log:*)" \
+            --allowedTools "Read" "Grep" "Glob" "Bash(git diff origin/*)" "Bash(git log:*)" \
             --output-format json \
             --json-schema "$(cat .github/pr-review/schema.json)" \
             > result.json
           jq -e '.is_error == false and (.structured_output | type == "object")' result.json
           jq '.structured_output' result.json > findings.json
       - name: Validate findings against schema
-        run: uvx check-jsonschema --schemafile .github/pr-review/schema.json findings.json
+        run: uvx check-jsonschema==0.39.0 --schemafile .github/pr-review/schema.json findings.json
       - name: Write job summary
         run: |
           {
@@ -61,6 +61,7 @@ jobs:
             else
               echo "| Severity | Location | Summary | Failure scenario |"
               echo "|---|---|---|---|"
-              jq -r '.findings[] | "| \(.severity) | `\(.file):\(.line)` | \(.summary | gsub("\\|"; "\\|") | gsub("\n"; " ")) | \(.failure_scenario | gsub("\\|"; "\\|") | gsub("\n"; " ")) |"' findings.json
+              jq -r 'def esc: gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;");
+                .findings[] | "| \(.severity) | `\(.file | esc):\(.line)` | \(.summary | esc) | \(.failure_scenario | esc) |"' findings.json
             fi
           } >> "$GITHUB_STEP_SUMMARY"

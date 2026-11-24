@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Annotated, Any
 
-from pydantic import BaseModel, BeforeValidator
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 def _blank_to_none(value: Any) -> Any:
@@ -19,8 +19,16 @@ class Deliverable(BaseModel):
     """One piece of work the Brief asks for."""
 
     asset_type: OptionalStr = None
-    channel: OptionalStr = None
-    format_or_dimensions: OptionalStr = None
+    channel: OptionalStr = Field(
+        None,
+        description=(
+            'Platform name only, such as "instagram". '
+            "The placement (feed, story, header) is not a channel."
+        ),
+    )
+    format_or_dimensions: OptionalStr = Field(
+        None, description='WxH only, such as "1080x1350", with no placement or label.'
+    )
     quantity: int | None = None
     due_date: date | None = None
 

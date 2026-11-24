@@ -13,9 +13,12 @@ from creative_ops.agents.coordinator import (
     Acknowledge,
     Amend,
     AnswerDoesNotFit,
+    CampaignOutcome,
     ConfirmTask,
     CoordinatorState,
+    Escalation,
     Retry,
+    check_answer,
     coordinate,
     resume,
 )
@@ -1529,3 +1532,40 @@ async def test_resume_confirming_a_task_for_a_campaign_without_that_escalation_i
             await resume(
                 client, session, escalated.state, ConfirmTask(**KEY_2, task_exists=True), TODAY
             )
+
+
+def _escalation(reason: str, answer: str) -> Escalation:
+    return Escalation(reason=reason, answer=answer, needs=[], ambiguities=[])
+
+
+def _state(*escalations: Escalation) -> CoordinatorState:
+    campaigns = [
+        CampaignOutcome(brand="Loomhouse", campaign_name="Spring Linen Edit", escalation=e)
+        for e in escalations
+    ]
+    return CoordinatorState(brief=BRIEF, escalation=None, campaigns=campaigns)
+
+
+@pytest.mark.parametrize(
+    ("escalation", "answer"),
+    [
+        (_escalation("missing_critical_field", "amend"), Amend(text="Due 1 March 2031.")),
+        (_escalation("revisions_requested", "acknowledge"), Acknowledge()),
+        (_escalation("run_failed", "retry"), Retry()),
+        (_escalation("task_may_exist", "confirm_task"), ConfirmTask(**KEY, task_exists=True)),
+    ],
+    ids=["amend", "acknowledge", "retry", "confirm-task"],
+)
+def test_check_answer_returns_for_an_answer_that_fits(escalation, answer):
+    check_answer(_state(escalation), answer)
+
+
+def test_check_answer_rejects_an_answer_kind_no_open_escalation_takes():
+    with pytest.raises(AnswerDoesNotFit, match="No open Escalation takes 'retry'"):
+        check_answer(_state(_escalation("missing_critical_field", "amend")), Retry())
+
+
+def test_check_answer_rejects_a_confirm_task_naming_no_task_may_exist_campaign():
+    state = _state(_escalation("task_may_exist", "confirm_task"))
+    with pytest.raises(AnswerDoesNotFit, match="No task_may_exist Escalation for 'Stridewell'"):
+        check_answer(state, ConfirmTask(**KEY_2, task_exists=True))

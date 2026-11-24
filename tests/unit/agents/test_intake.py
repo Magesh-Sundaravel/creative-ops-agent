@@ -362,6 +362,7 @@ async def test_system_prompt_states_the_extraction_rules(fake_client, make_messa
 @pytest.mark.parametrize(
     ("field", "rule"),
     [
+        ("asset_type", "kind of asset only"),
         ("channel", "platform name only"),
         ("format_or_dimensions", "WxH only"),
     ],

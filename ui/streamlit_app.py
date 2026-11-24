@@ -6,7 +6,14 @@ import httpx
 import streamlit as st
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from creative_ops.agents.coordinator import CampaignOutcome, Escalation
+from creative_ops.agents.coordinator import (
+    Acknowledge,
+    Amend,
+    CampaignOutcome,
+    ConfirmTask,
+    Escalation,
+    Retry,
+)
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
 
 
@@ -48,6 +55,56 @@ def submit_brief(text: str) -> str:
     return BriefId.model_validate(asyncio.run(_request("POST", "/briefs", json={"text": text}))).id
 
 
+def post_answer(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> None:
+    """Answer an open Escalation; the Brief resumes in the background."""
+    asyncio.run(_request("POST", f"/briefs/{brief_id}/answers", json=answer.model_dump()))
+
+
+def _send(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> None:
+    """Post an answer, showing the API's message when it refuses."""
+    try:
+        post_answer(brief_id, answer)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json()["detail"]
+        except (ValueError, KeyError, TypeError):
+            detail = exc.response.text or str(exc)
+        st.error(str(detail))
+        if exc.response.status_code == 409:
+            st.session_state["polling"] = brief_id
+            st.rerun()  # stale view: refetch the Brief
+    except API_ERRORS as exc:
+        st.error(str(exc))
+    else:
+        st.session_state["polling"] = brief_id
+        st.rerun()  # the Brief is running again: rerun the page so it polls
+
+
+def answer_controls(
+    brief_id: str, escalation: Escalation, key: str, campaign: CampaignOutcome | None
+) -> None:
+    """The control that matches the kind of answer the Escalation takes."""
+    if escalation.answer == "amend":
+        text = st.text_area("Amendment", key=f"amend-{key}")
+        if st.button("Amend", key=f"amend-button-{key}", disabled=not text.strip()):
+            _send(brief_id, Amend(text=text))
+    elif escalation.answer == "confirm_task" and campaign:
+        exists = st.radio("Task exists?", ["Yes", "No"], key=f"confirm-{key}", horizontal=True)
+        if st.button("Confirm", key=f"confirm-button-{key}"):
+            _send(
+                brief_id,
+                ConfirmTask(
+                    brand=campaign.brand or "",
+                    campaign_name=campaign.campaign_name or "",
+                    task_exists=exists == "Yes",
+                ),
+            )
+    elif escalation.answer != "confirm_task" and st.button(
+        escalation.answer.capitalize(), key=f"{escalation.answer}-{key}"
+    ):
+        _send(brief_id, Acknowledge() if escalation.answer == "acknowledge" else Retry())
+
+
 def outcome_card(campaign: CampaignOutcome) -> None:
     """One campaign's outcome: handed off, revisions requested, escalated, or unfinished."""
     with st.container(border=True):
@@ -82,6 +139,8 @@ def brief_pane(brief_id: str) -> None:
         st.error(f"Can't load the Brief: {exc}")  # polling goes on, and recovers with the API
         return
     st.markdown(f"**Status:** {brief.status}")
+    with st.expander("Brief as received"):
+        st.text(brief.brief)
     if brief.error:
         st.error(brief.error)
     if brief.results:
@@ -90,9 +149,19 @@ def brief_pane(brief_id: str) -> None:
             outcome_card(campaign)
         if result.escalation:
             escalation_view(result.escalation, "Brief")
-        for campaign in result.campaigns:
+            if brief.status == "escalated":
+                answer_controls(brief_id, result.escalation, f"brief-{len(brief.results)}", None)
+        for i, campaign in enumerate(result.campaigns):
             if campaign.escalation:
                 escalation_view(campaign.escalation, f"{campaign.brand} / {campaign.campaign_name}")
+                if brief.status == "escalated":
+                    answer_controls(
+                        brief_id, campaign.escalation, f"{i}-{len(brief.results)}", campaign
+                    )
+    if brief.amendments:
+        st.markdown("**Amendments**")
+        for amendment in brief.amendments:
+            st.markdown(f"> {amendment}")
     if brief.status != "running" and st.session_state.pop("polling", None) == brief_id:
         st.rerun()  # the Run finished: rerun the page so it stops polling
 

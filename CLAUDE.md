@@ -71,8 +71,8 @@ uv run python evals/run_evals.py
 4. [x] Mock MCP server: DAM + tracker tools, brand guidelines as resources, seed data
 5. [x] Review + Handoff subagents, least-privilege tool sets
 6. [x] Coordinator: decomposition, parallel subagents, re-plan, escalation gates
-7. [ ] Eval harness + first dataset (10–15 briefs)  ← CURRENT
-8. [ ] FastAPI + Streamlit (submit brief, view trace, approve escalations)
+7. [x] Eval harness + first dataset (10–15 briefs)
+8. [ ] FastAPI + Streamlit (submit brief, view trace, approve escalations)  ← CURRENT
 9. [ ] CI: tests, Ruff, evals, `claude -p` review with structured output
 10. [ ] Observability, Docker, README with architecture + eval results
 

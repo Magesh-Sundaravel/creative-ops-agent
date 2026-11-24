@@ -554,7 +554,30 @@ class ConfirmTask(CampaignKey):
 
 
 class AnswerDoesNotFit(ValueError):
-    """No open Escalation takes this kind of answer. Nothing was run."""
+    """No open Escalation takes this answer: its kind, or the campaign it names. Nothing ran."""
+
+
+def _names_open_task_may_exist(c: CampaignOutcome, answer: ConfirmTask) -> bool:
+    """`c` is the campaign `answer` names, and its Escalation is task-may-exist."""
+    return (
+        c.escalation is not None
+        and c.escalation.reason == "task_may_exist"
+        and (c.brand, c.campaign_name) == (answer.brand, answer.campaign_name)
+    )
+
+
+def check_answer(
+    state: CoordinatorState, answer: Amend | Acknowledge | Retry | ConfirmTask
+) -> None:
+    """Raise `AnswerDoesNotFit` unless `answer` fits an open Escalation; runs nothing."""
+    if answer.kind not in {e.answer for e in state.escalations}:
+        raise AnswerDoesNotFit(f"No open Escalation takes {answer.kind!r}.")
+    if isinstance(answer, ConfirmTask) and not any(
+        _names_open_task_may_exist(c, answer) for c in state.campaigns
+    ):
+        raise AnswerDoesNotFit(
+            f"No task_may_exist Escalation for {answer.brand!r} / {answer.campaign_name!r}."
+        )
 
 
 async def resume(
@@ -573,8 +596,7 @@ async def resume(
     Coordinator again as Retry does, so every other unclosed campaign runs again too. Other
     Escalations stay open after an answer that runs nothing.
     """
-    if answer.kind not in {e.answer for e in state.escalations}:
-        raise AnswerDoesNotFit(f"No open Escalation takes {answer.kind!r}.")
+    check_answer(state, answer)
     if isinstance(answer, Amend | Retry):
         brief = f"{state.brief}\n\n{answer.text}" if isinstance(answer, Amend) else state.brief
         carried = [c for c in state.campaigns if c.closed]
@@ -599,21 +621,9 @@ async def _confirm_task(
 ) -> CoordinatorResult:
     """Close the named task-may-exist campaign against its Task, or reopen it and run again."""
 
-    def named(c: CampaignOutcome) -> bool:
-        """`c` is the campaign `answer` names, and its Escalation is task-may-exist."""
-        return (
-            c.escalation is not None
-            and c.escalation.reason == "task_may_exist"
-            and (c.brand, c.campaign_name) == (answer.brand, answer.campaign_name)
-        )
-
-    if not any(map(named, state.campaigns)):
-        raise AnswerDoesNotFit(
-            f"No task_may_exist Escalation for {answer.brand!r} / {answer.campaign_name!r}."
-        )
     campaigns = [
         c.model_copy(update={"escalation": None, "task_may_exist": answer.task_exists})
-        if named(c)
+        if _names_open_task_may_exist(c, answer)
         else c
         for c in state.campaigns
     ]

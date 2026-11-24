@@ -1,14 +1,20 @@
 """Graders: score one Run's result against an Eval Case (code checks the facts, ADR 0003)."""
 
+import asyncio
+import logging
 from collections import Counter
 from collections.abc import Callable, Sequence
 
 from anthropic import AsyncAnthropic
-from pydantic import BaseModel
+from anthropic.types import Message, ToolParam
+from pydantic import BaseModel, Field
 
 from creative_ops.agents.coordinator import CampaignOutcome, CoordinatorResult
+from creative_ops.config import get_settings
 from creative_ops.schemas.brief import Budget, Deliverable, StructuredBrief
 from evals.cases import EvalCase, ExpectedCampaign, campaign_key
+
+logger = logging.getLogger(__name__)
 
 
 class Grade(BaseModel):
@@ -196,22 +202,29 @@ def _deliverable_grades(
     return grades
 
 
-def _field_grades(case: EvalCase, result: CoordinatorResult) -> list[Grade]:
-    """Each Structured Brief's factual fields, against the last intake's brief of its campaign.
+def _brief_pairs(
+    case: EvalCase, result: CoordinatorResult
+) -> list[tuple[StructuredBrief, StructuredBrief]]:
+    """Each expected Structured Brief with the last intake's brief of its campaign.
 
-    Only a campaign whose key appears once on each side is graded. A missing one fails the
+    Only a campaign whose key appears once on each side is paired. A missing one fails the
     count check; for a repeated key, which brief pairs with which is ambiguous, so none is.
     """
     produced = [c.brief for c in result.intakes[-1].campaigns] if result.intakes else []
     expected_counts = Counter(map(_campaign_key, case.expected.briefs))
     produced_by_key = {_campaign_key(b): b for b in produced}
     produced_counts = Counter(map(_campaign_key, produced))
+    return [
+        (e, produced_by_key[_campaign_key(e)])
+        for e in case.expected.briefs
+        if expected_counts[_campaign_key(e)] == 1 and produced_counts[_campaign_key(e)] == 1
+    ]
+
+
+def _field_grades(pairs: list[tuple[StructuredBrief, StructuredBrief]]) -> list[Grade]:
+    """Each paired Structured Brief's factual fields."""
     grades: list[Grade] = []
-    for e in case.expected.briefs:
-        key = _campaign_key(e)
-        if expected_counts[key] != 1 or produced_counts[key] != 1:
-            continue
-        g = produced_by_key[key]
+    for e, g in pairs:
         campaign = _label(e)
         checks: list[tuple[str, object, object]] = [
             ("brand", _strip(e.brand), _strip(g.brand)),
@@ -227,9 +240,143 @@ def _field_grades(case: EvalCase, result: CoordinatorResult) -> list[Grade]:
     return grades
 
 
+class Verdict(BaseModel):
+    """Input of the Judge's `submit_verdict` tool."""
+
+    passed: bool
+    reason: str = Field(description="One line saying why.")
+
+
+JUDGE_SYSTEM = """\
+You are grading an AI agent's output against the expected output. Follow the rubric, then \
+record your verdict by calling `submit_verdict` with whether it passes and a one-line reason."""
+
+FIELD_RUBRIC = """\
+Pass if the produced text means the same as the expected text: wording may differ, but every \
+fact in the expected text is there and none is changed or added."""
+
+AMBIGUITIES_RUBRIC = """\
+Each list is a Brief's Ambiguities: things in the Brief that are unclear or contradictory. Pass \
+only if every expected Ambiguity is covered by a produced one, however worded, and no produced \
+Ambiguity is invented (covered by no expected one)."""
+
+_VERDICT_TOOL: ToolParam = {
+    "name": "submit_verdict",
+    "description": "Record whether the produced output passes the rubric, with a one-line reason.",
+    "input_schema": Verdict.model_json_schema(),
+}
+
+
+async def _judge(client: AsyncAnthropic, rubric: str, expected: str, produced: str) -> Message:
+    """One Judge call on the fast model, forced to answer through `submit_verdict`."""
+    return await client.messages.create(
+        model=get_settings().model_fast,
+        max_tokens=512,
+        temperature=0,
+        system=JUDGE_SYSTEM,
+        messages=[
+            {
+                "role": "user",
+                "content": (
+                    f"<rubric>\n{rubric}\n</rubric>\n\n<expected>\n{expected}\n</expected>\n\n"
+                    f"<produced>\n{produced}\n</produced>"
+                ),
+            }
+        ],
+        tools=[_VERDICT_TOOL],
+        tool_choice={"type": "tool", "name": "submit_verdict"},
+    )
+
+
+def _verdict(response: Message) -> Verdict:
+    """The Judge's verdict: the input of its one `submit_verdict` call.
+
+    Raises ValueError if the reply has no single tool_use or its input is not a Verdict.
+    """
+    [tool_use] = [b for b in response.content if b.type == "tool_use"]
+    return Verdict.model_validate(tool_use.input)
+
+
+async def _judge_grade(
+    client: AsyncAnthropic,
+    campaign: str | None,
+    field: str,
+    rubric: str,
+    expected: str | None,
+    produced: str | None,
+) -> Grade:
+    """A Judge Grade; a match or an empty side is decided in code, with no Judge call.
+
+    A malformed Judge reply fails only this Grade, with the error as its reason; an API
+    error propagates, so the case fails loudly rather than scoring a broken setup.
+    """
+    if _norm(expected) == _norm(produced):
+        return Grade(grader="judge", campaign=campaign, field=field, passed=True)
+    if not _norm(expected) or not _norm(produced):
+        return _grade("judge", campaign, field, expected, produced)
+    response = await _judge(client, rubric, expected or "", produced or "")
+    try:
+        verdict = _verdict(response)
+    except ValueError as exc:
+        logger.exception("Judge reply for %s %s is malformed", campaign or "Brief", field)
+        return Grade(
+            grader="judge",
+            campaign=campaign,
+            field=field,
+            passed=False,
+            reason=f"Judge failed: {type(exc).__name__}: {exc}",
+        )
+    return Grade(
+        grader="judge",
+        campaign=campaign,
+        field=field,
+        passed=verdict.passed,
+        reason=verdict.reason,
+    )
+
+
+def _bullets(items: list[str]) -> str:
+    """A list as one `- item` line each, for the Judge; empty for no items."""
+    return "\n".join(f"- {item}" for item in items)
+
+
+async def _judge_grades(
+    case: EvalCase,
+    result: CoordinatorResult,
+    client: AsyncAnthropic,
+    pairs: list[tuple[StructuredBrief, StructuredBrief]],
+) -> list[Grade]:
+    """Each paired brief's free-text fields, then the Brief's Ambiguities, judged concurrently.
+
+    Ambiguities are judged only when the case expects campaigns.
+    """
+    calls = [
+        _judge_grade(client, _label(e), field, FIELD_RUBRIC, getattr(e, field), getattr(g, field))
+        for e, g in pairs
+        for field in ("objective", "key_message", "target_audience", "usage_rights")
+    ]
+    if case.expected.briefs:
+        produced = result.intakes[-1].ambiguities if result.intakes else []
+        calls.append(
+            _judge_grade(
+                client,
+                None,
+                "ambiguities",
+                AMBIGUITIES_RUBRIC,
+                _bullets(case.expected.ambiguities),
+                _bullets(produced),
+            )
+        )
+    async with asyncio.TaskGroup() as group:  # one call raising cancels the rest
+        tasks = [group.create_task(call) for call in calls]
+    return [task.result() for task in tasks]
+
+
 async def grade_case(
     case: EvalCase, result: CoordinatorResult, judge_client: AsyncAnthropic
 ) -> CaseGrades:
     """Every Grade for one Run's result against its Eval Case."""
-    grades = _outcome_grades(case, result) + _field_grades(case, result)
+    pairs = _brief_pairs(case, result)
+    grades = _outcome_grades(case, result) + _field_grades(pairs)
+    grades += await _judge_grades(case, result, judge_client, pairs)
     return CaseGrades(case_id=case.id, grades=grades)

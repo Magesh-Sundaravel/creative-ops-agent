@@ -318,5 +318,37 @@
       "expires_on": "2025-06-30"
     },
     "tags": ["skincare", "serum", "story"]
+  },
+  {
+    "id": "AST-021",
+    "brand": "loomhouse",
+    "campaign_name": "Winter Knit Edit",
+    "asset_type": "image",
+    "channel": "instagram",
+    "format_or_dimensions": "1080x1350",
+    "file_name": "loomhouse_winter-knit_ig-feed_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["instagram", "facebook"],
+      "expires_on": "2032-09-30"
+    },
+    "tags": ["wool", "knitwear", "studio"]
+  },
+  {
+    "id": "AST-022",
+    "brand": "loomhouse",
+    "campaign_name": "Winter Knit Edit",
+    "asset_type": "image",
+    "channel": "email",
+    "format_or_dimensions": "1200x600",
+    "file_name": "loomhouse_winter-knit_email-header_01.jpg",
+    "status": "final",
+    "usage_rights": {
+      "territories": ["UK", "EU"],
+      "channels": ["email", "website"],
+      "expires_on": "2032-09-30"
+    },
+    "tags": ["wool", "knitwear", "studio"]
   }
 ]

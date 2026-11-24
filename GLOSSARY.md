@@ -81,3 +81,17 @@ _Avoid_: Orchestrator, supervisor, manager
 **Escalation**:
 The Coordinator stopping and handing a decision to a human, with the reason, what it needs, and every Ambiguity in the Brief.
 _Avoid_: Escalation gate, human gate, approval
+
+### Evaluation
+
+**Eval Case**:
+One Brief with the date it is run as of and the Structured Briefs, Ambiguities and outcome it should produce.
+_Avoid_: Test case, example, sample
+
+**Grader**:
+A check that scores one aspect of a Run's result against an Eval Case, either in code or with a Judge.
+_Avoid_: Scorer, metric, evaluator
+
+**Judge**:
+A model asked whether a produced free-text field means the same as the expected one, answering pass or fail with a reason.
+_Avoid_: LLM grader, critic

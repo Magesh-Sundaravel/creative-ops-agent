@@ -18,9 +18,14 @@ async def test_seed_has_about_twenty_assets_across_every_brand(connect):
     async with connect() as client:
         assets = await _search(client)
 
-    assert len(assets) == 20
+    assert len(assets) == 22
     assert {a["brand"] for a in assets} == {"loomhouse", "stridewell", "verdant-skin"}
-    assert 2 <= len({a["campaign_name"] for a in assets}) <= 3
+    assert {a["campaign_name"] for a in assets} == {
+        "Spring Linen Edit",
+        "Winter Knit Edit",
+        "City Miles",
+        "Dew Ritual",
+    }
 
 
 async def test_seed_flaw_wrong_dimensions_landscape_video_on_tiktok(connect):

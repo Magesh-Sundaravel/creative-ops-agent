@@ -14,11 +14,19 @@ _Avoid_: Turn, session, conversation
 A single model call within a Run, together with any tool calls that call requests.
 _Avoid_: Turn, step, round
 
+**Trace**:
+Every Run that handled a Brief, in order, each with its agent, its Iterations and its token usage, including the Runs that failed.
+_Avoid_: Log, history, transcript
+
 ### Briefs
 
 **Brief**:
 The client's request for creative work as free text, exactly as received.
 _Avoid_: Raw brief, request, job
+
+**Amendment**:
+Text a human adds to a Brief when answering an Escalation. The Brief itself stays as received.
+_Avoid_: Edit, correction, update
 
 **Structured Brief**:
 The fields of one campaign in a Brief, holding only what the Brief states and nothing inferred. A Brief has one or more.

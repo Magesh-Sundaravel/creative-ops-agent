@@ -272,7 +272,6 @@ async def _judge(client: AsyncAnthropic, rubric: str, expected: str, produced: s
     return await client.messages.create(
         model=get_settings().model_fast,
         max_tokens=512,
-        temperature=0,
         system=JUDGE_SYSTEM,
         messages=[
             {

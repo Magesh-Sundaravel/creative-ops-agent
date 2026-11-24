@@ -70,7 +70,7 @@ async def test_search_no_filters_returns_every_asset(connect):
     async with connect() as client:
         assets = await _search(client)
 
-    assert {a["id"] for a in assets} == {f"AST-{n:03d}" for n in range(1, 21)}
+    assert {a["id"] for a in assets} == {f"AST-{n:03d}" for n in range(1, 23)}
 
 
 @pytest.mark.parametrize(

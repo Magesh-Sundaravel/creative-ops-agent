@@ -27,6 +27,9 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # only to post the sticky review comment
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,7 +37,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
       - run: npm install -g @anthropic-ai/claude-code@2.1.331
       - name: Run claude -p
         env:
@@ -52,17 +55,56 @@ jobs:
           jq '.structured_output' result.json > findings.json
       - name: Validate findings against schema
         run: uvx check-jsonschema==0.39.0 --schemafile .github/pr-review/schema.json findings.json
-      - name: Write job summary
+      - name: Render review
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
+            echo "<!-- pr-review-sticky -->"
             echo "## PR review"
+            echo
+            echo "Reviewed commit \`${HEAD_SHA::7}\`"
             echo
             if [ "$(jq '.findings | length' findings.json)" -eq 0 ]; then
               echo "No findings."
             else
               echo "| Severity | Location | Summary | Failure scenario |"
               echo "|---|---|---|---|"
-              jq -r 'def esc: gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;");
-                .findings[] | "| \(.severity) | `\(.file | esc):\(.line)` | \(.summary | esc) | \(.failure_scenario | esc) |"' findings.json
+              jq -r 'def escf: gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'");
+                def esc: gsub("&"; "&amp;") | gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;") | gsub("@"; "@\u200b") | gsub("\\["; "&#91;") | gsub("\\]"; "&#93;");
+                .findings[] | "| \(.severity) | `\(.file | escf):\(.line)` | \(.summary | esc) | \(.failure_scenario | esc) |"' findings.json
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > review.tmp
+          # GitHub rejects comment bodies over 65536 characters; cut on a line boundary.
+          if [ "$(wc -c < review.tmp)" -gt 60000 ]; then
+            { head -c 60000 review.tmp | sed '$d' | iconv -c -t UTF-8; printf '\n_Truncated: too many findings to show._\n'; } > review.cut
+            mv review.cut review.tmp
+          fi
+          # review.md exists only if rendering fully succeeded.
+          mv review.tmp review.md
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Render failure notice
+        if: failure() && hashFiles('review.md') == ''
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          {
+            echo "<!-- pr-review-sticky -->"
+            echo "## PR review"
+            echo
+            echo "Review failed for commit \`${HEAD_SHA::7}\`; any earlier result is out of date. See the workflow run."
+          } > review.md
+      - name: Post sticky comment
+        if: always() && hashFiles('review.md') != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          comments="repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments"
+          id=$(gh api --paginate "$comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- pr-review-sticky -->"))) | .id' | sed -n 1p)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@review.md
+          else
+            gh api -X POST "$comments" -F body=@review.md
+          fi

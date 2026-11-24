@@ -5,13 +5,21 @@ import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Annotated, Any
 from uuid import uuid4
 
 from anthropic import AsyncAnthropic
-from fastapi import FastAPI, HTTPException
+from fastapi import Body, FastAPI, HTTPException
 
-from creative_ops.agents.coordinator import CoordinatorResult
+from creative_ops.agents.coordinator import (
+    Acknowledge,
+    Amend,
+    AnswerDoesNotFit,
+    ConfirmTask,
+    CoordinatorResult,
+    Retry,
+    check_answer,
+)
 from creative_ops.api.models import (
     BriefDetail,
     BriefId,
@@ -36,15 +44,17 @@ def create_app(
     runs: set[asyncio.Task[None]] = set()
     sessions: list[Any] = []
 
-    async def run(record: BriefRecord) -> None:
-        """Run the Coordinator on a Brief, then record its result or its failure."""
+    async def run(record: BriefRecord, start: Callable[[], Awaitable[CoordinatorResult]]) -> None:
+        """Await a Coordinator Run on a Brief, then record its result or its failure."""
         try:
-            result = await coordinate(client, sessions[0], record.brief, date.today())
+            result = await start()
         except Exception as exc:
             logger.exception("Run failed for Brief %s", record.id)
             record.error = f"{type(exc).__name__}: {exc}"
-            record.status = "failed"
+            # A failed resume leaves the Escalation open to answer again.
+            record.status = "failed" if record.state is None else "escalated"
             return
+        record.error = None
         record.results.append(result)
         record.state = result.state
         record.status = "escalated" if result.state else "done"
@@ -64,6 +74,12 @@ def create_app(
 
     app = FastAPI(lifespan=lifespan)
 
+    def spawn(record: BriefRecord, start: Callable[[], Awaitable[CoordinatorResult]]) -> None:
+        """Start a Run in the background, tracked until it finishes."""
+        task = asyncio.create_task(run(record, start))
+        runs.add(task)
+        task.add_done_callback(runs.discard)
+
     @app.post("/briefs", status_code=202)
     async def submit(body: SubmitBrief) -> BriefId:
         """Start a Run on a new Brief in the background."""
@@ -77,9 +93,37 @@ def create_app(
             error=None,
         )
         store[record.id] = record
-        task = asyncio.create_task(run(record))
-        runs.add(task)
-        task.add_done_callback(runs.discard)
+        spawn(record, lambda: coordinate(client, sessions[0], record.brief, date.today()))
+        return BriefId(id=record.id)
+
+    @app.post("/briefs/{brief_id}/answers", status_code=202)
+    async def answer(
+        brief_id: str,
+        body: Annotated[Amend | Acknowledge | Retry | ConfirmTask, Body(discriminator="kind")],
+    ) -> BriefId:
+        """Answer an open Escalation and resume the Brief in the background."""
+        record = store.get(brief_id)
+        if record is None:
+            raise HTTPException(status_code=404, detail="No such Brief.")
+        if record.status != "escalated" or record.state is None:
+            raise HTTPException(status_code=409, detail=f"The Brief is {record.status}.")
+        if isinstance(body, Amend) and not body.text.strip():
+            raise HTTPException(status_code=422, detail="An Amendment can't be empty.")
+        try:
+            check_answer(record.state, body)
+        except AnswerDoesNotFit as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        state = record.state
+
+        async def resume_brief() -> CoordinatorResult:
+            result = await resume(client, sessions[0], state, body, date.today())
+            if isinstance(body, Amend):
+                record.amendments.append(body.text)  # only once the amended Run has run
+            return result
+
+        record.status = "running"
+        record.error = None
+        spawn(record, resume_brief)
         return BriefId(id=record.id)
 
     @app.get("/briefs")

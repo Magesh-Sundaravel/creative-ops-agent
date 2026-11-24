@@ -6,7 +6,14 @@ import httpx
 import streamlit as st
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from creative_ops.agents.coordinator import CampaignOutcome, Escalation
+from creative_ops.agents.coordinator import (
+    Acknowledge,
+    Amend,
+    CampaignOutcome,
+    ConfirmTask,
+    Escalation,
+    Retry,
+)
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
 
 
@@ -19,8 +26,8 @@ class UISettings(BaseSettings):
 
 
 API = UISettings().api_url
+# A failed request, or a body that isn't the shape the API promises.
 API_ERRORS = (httpx.HTTPError, ValueError)
-"""A failed request, or a body that isn't the shape the API promises."""
 
 st.set_page_config(page_title="Creative Ops", layout="wide")
 
@@ -46,6 +53,65 @@ def list_briefs() -> list[BriefSummary]:
 def submit_brief(text: str) -> str:
     """Submit a Brief; the id the API gave it."""
     return BriefId.model_validate(asyncio.run(_request("POST", "/briefs", json={"text": text}))).id
+
+
+def post_answer(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> None:
+    """Answer an open Escalation; the Brief resumes in the background."""
+    asyncio.run(_request("POST", f"/briefs/{brief_id}/answers", json=answer.model_dump()))
+
+
+def _send(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> None:
+    """Post an answer, showing the API's message when it refuses."""
+    try:
+        post_answer(brief_id, answer)
+    except httpx.HTTPStatusError as exc:
+        try:
+            detail = exc.response.json()["detail"]
+            if isinstance(detail, list):  # FastAPI's validation errors
+                detail = "; ".join(str(item["msg"]) for item in detail)
+        except (ValueError, KeyError, TypeError):
+            detail = exc.response.text or str(exc)
+        st.error(str(detail))
+        if exc.response.status_code == 409:
+            st.session_state["polling"] = brief_id
+            st.rerun()  # stale view: refetch the Brief
+    except API_ERRORS as exc:
+        st.error(str(exc))
+    else:
+        st.session_state["polling"] = brief_id
+        st.rerun()  # the Brief is running again: rerun the page so it polls
+
+
+def answer_controls(
+    brief_id: str, escalations: list[tuple[Escalation, CampaignOutcome | None]], key: str
+) -> None:
+    """One control per kind of answer the open Escalations take; ConfirmTask is per campaign."""
+    kinds = {e.answer for e, _ in escalations}
+    if "amend" in kinds:
+        text = st.text_area("Amendment (applies to the whole Brief)", key=f"amend-{key}")
+        if st.button("Amend", key=f"amend-button-{key}", disabled=not text.strip()):
+            _send(brief_id, Amend(text=text))
+    if "acknowledge" in kinds and st.button("Acknowledge all", key=f"acknowledge-{key}"):
+        _send(brief_id, Acknowledge())
+    if "retry" in kinds and st.button("Retry the Brief", key=f"retry-{key}"):
+        _send(brief_id, Retry())
+    for i, (escalation, campaign) in enumerate(escalations):
+        if escalation.answer != "confirm_task":
+            continue
+        if campaign is None or campaign.brand is None or campaign.campaign_name is None:
+            st.warning("This Escalation needs a Task check, but names no campaign to answer.")
+            continue
+        label = f"{campaign.brand} / {campaign.campaign_name}"
+        exists = st.radio(f"Task exists for {label}?", ["Yes", "No"], key=f"confirm-{i}-{key}")
+        if st.button("Confirm", key=f"confirm-button-{i}-{key}"):
+            _send(
+                brief_id,
+                ConfirmTask(
+                    brand=campaign.brand,
+                    campaign_name=campaign.campaign_name,
+                    task_exists=exists == "Yes",
+                ),
+            )
 
 
 def outcome_card(campaign: CampaignOutcome) -> None:
@@ -82,17 +148,28 @@ def brief_pane(brief_id: str) -> None:
         st.error(f"Can't load the Brief: {exc}")  # polling goes on, and recovers with the API
         return
     st.markdown(f"**Status:** {brief.status}")
+    with st.expander("Brief as received"):
+        st.text(brief.brief)
     if brief.error:
         st.error(brief.error)
     if brief.results:
         result = brief.results[-1]
         for campaign in result.campaigns:
             outcome_card(campaign)
+        open_escalations: list[tuple[Escalation, CampaignOutcome | None]] = []
         if result.escalation:
             escalation_view(result.escalation, "Brief")
+            open_escalations.append((result.escalation, None))
         for campaign in result.campaigns:
             if campaign.escalation:
                 escalation_view(campaign.escalation, f"{campaign.brand} / {campaign.campaign_name}")
+                open_escalations.append((campaign.escalation, campaign))
+        if brief.status == "escalated":
+            answer_controls(brief_id, open_escalations, str(len(brief.results)))
+    if brief.amendments:
+        st.markdown("**Amendments**")
+        for amendment in brief.amendments:
+            st.markdown(f"> {amendment}")
     if brief.status != "running" and st.session_state.pop("polling", None) == brief_id:
         st.rerun()  # the Run finished: rerun the page so it stops polling
 

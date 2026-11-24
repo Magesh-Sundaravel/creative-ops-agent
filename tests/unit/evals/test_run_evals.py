@@ -1,11 +1,13 @@
 from datetime import date
+from types import SimpleNamespace
 
 import pytest
 
 from creative_ops.agents.coordinator import CoordinatorResult, Escalation
 from creative_ops.loop.agent_loop import LoopResult, StopOutcome, TokenUsage
+from evals import run_evals
 from evals.cases import EvalCase
-from evals.run_evals import run_cases, select_cases
+from evals.run_evals import CaseResult, Report, run_cases, select_cases
 
 
 def eval_case(case_id: str, escalation: str | None) -> EvalCase:
@@ -128,3 +130,40 @@ async def test_run_cases_a_run_raising_several_errors_records_the_first(connect,
     )
 
     assert report.cases[0].error == "ConnectionError: down"
+
+
+def run_main(monkeypatch, tmp_path, results: list[CaseResult]) -> None:
+    """Drive `main` with `run_cases` returning a canned report; no API, results in `tmp_path`."""
+
+    async def canned(cases, client, judge_client):
+        return Report(cases=results, scores={}, field_scores={})
+
+    settings = SimpleNamespace(anthropic_api_key=SimpleNamespace(get_secret_value=lambda: "key"))
+    monkeypatch.setattr(run_evals, "get_settings", lambda: settings)
+    monkeypatch.setattr(run_evals, "load_cases", lambda: [])
+    monkeypatch.setattr(run_evals, "run_cases", canned)
+    monkeypatch.setattr(run_evals, "RESULTS_DIR", tmp_path)
+    run_evals.main([])
+
+
+def case_result(*, passed: bool, error: str | None = None) -> CaseResult:
+    return CaseResult(case_id="c", passed=passed, grades=[], usage=None, error=error)
+
+
+def test_main_exits_1_when_a_case_errored(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, tmp_path, [case_result(passed=False, error="OSError: down")])
+
+    assert exit_info.value.code == 1
+
+
+def test_main_exits_0_when_cases_failed_grades_but_none_errored(monkeypatch, tmp_path):
+    run_main(monkeypatch, tmp_path, [case_result(passed=False), case_result(passed=True)])
+
+    assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_main_exits_0_when_all_cases_pass(monkeypatch, tmp_path):
+    run_main(monkeypatch, tmp_path, [case_result(passed=True)])
+
+    assert len(list(tmp_path.glob("*.json"))) == 1

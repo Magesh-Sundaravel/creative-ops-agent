@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import date
 from types import SimpleNamespace
 
@@ -132,7 +133,7 @@ async def test_run_cases_a_run_raising_several_errors_records_the_first(connect,
     assert report.cases[0].error == "ConnectionError: down"
 
 
-def run_main(monkeypatch, tmp_path, results: list[CaseResult]) -> None:
+def run_main(monkeypatch, tmp_path, results: list[CaseResult], argv: Sequence[str] = ()) -> None:
     """Drive `main` with `run_cases` returning a canned report; no API, results in `tmp_path`."""
 
     async def canned(cases, client, judge_client):
@@ -143,7 +144,7 @@ def run_main(monkeypatch, tmp_path, results: list[CaseResult]) -> None:
     monkeypatch.setattr(run_evals, "load_cases", lambda: [])
     monkeypatch.setattr(run_evals, "run_cases", canned)
     monkeypatch.setattr(run_evals, "RESULTS_DIR", tmp_path)
-    run_evals.main([])
+    run_evals.main(argv)
 
 
 def case_result(*, passed: bool, error: str | None = None) -> CaseResult:
@@ -157,10 +158,46 @@ def test_main_exits_1_when_a_case_errored(monkeypatch, tmp_path):
     assert exit_info.value.code == 1
 
 
-def test_main_exits_0_when_cases_failed_grades_but_none_errored(monkeypatch, tmp_path):
-    run_main(monkeypatch, tmp_path, [case_result(passed=False), case_result(passed=True)])
+def test_main_exits_1_when_pass_rate_is_below_the_threshold(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, tmp_path, [case_result(passed=False), case_result(passed=True)])
+
+    assert exit_info.value.code == 1
+
+
+def test_main_rejects_a_min_pass_rate_outside_0_to_1(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, tmp_path, [case_result(passed=True)], ["--min-pass-rate", "90"])
+
+    assert exit_info.value.code == 2
+
+
+def test_main_exits_1_when_no_cases_ran(monkeypatch, tmp_path):
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, tmp_path, [], ["--min-pass-rate", "0"])
+
+    assert exit_info.value.code == 1
+
+
+def test_main_exits_0_when_pass_rate_meets_the_threshold_despite_a_failed_case(
+    monkeypatch, tmp_path
+):
+    results = [case_result(passed=True)] * 9 + [case_result(passed=False)]
+
+    run_main(monkeypatch, tmp_path, results)
 
     assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_main_exits_1_when_a_case_errored_even_if_pass_rate_meets_the_threshold(
+    monkeypatch, tmp_path
+):
+    results = [case_result(passed=True)] * 9 + [case_result(passed=False, error="OSError: down")]
+
+    with pytest.raises(SystemExit) as exit_info:
+        run_main(monkeypatch, tmp_path, results, ["--min-pass-rate", "0.5"])
+
+    assert exit_info.value.code == 1
 
 
 def test_main_exits_0_when_all_cases_pass(monkeypatch, tmp_path):

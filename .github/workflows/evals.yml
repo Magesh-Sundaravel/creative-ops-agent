@@ -1,6 +1,7 @@
 name: Evals
 
-# Advisory: failed grades stay green; the job fails only when a case errored (runner exit 1).
+# Gated by the runner's exit code: fails if a case errored, no case ran, or the pass rate is
+# below --min-pass-rate (default in evals/run_evals.py).
 on:
   pull_request:
     branches: [main]

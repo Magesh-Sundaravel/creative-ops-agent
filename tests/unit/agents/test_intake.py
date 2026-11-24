@@ -378,3 +378,18 @@ async def test_submit_brief_schema_states_the_plain_deliverable_form(
     (tool,) = client.messages.calls[0]["tools"]
     description = tool["input_schema"]["$defs"]["Deliverable"]["properties"][field]["description"]
     assert rule.lower() in description.lower()
+
+
+async def test_submit_brief_schema_states_mandatories_drop_trailing_punctuation(
+    fake_client, make_message
+):
+    client = fake_client(make_message("end_turn"))
+
+    with pytest.raises(NoValidSubmission):
+        await intake(client, BRIEF)
+
+    (tool,) = client.messages.calls[0]["tools"]
+    description = tool["input_schema"]["$defs"]["StructuredBrief"]["properties"]["mandatories"][
+        "description"
+    ]
+    assert "no trailing punctuation" in description.lower()

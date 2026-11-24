@@ -113,3 +113,18 @@ async def test_run_cases_a_session_that_fails_to_open_fails_only_its_case(connec
         ("broken", False, "OSError: server did not start"),
         ("ok", True, None),
     ]
+
+
+async def test_run_cases_a_run_raising_several_errors_records_the_first(connect, fake_client):
+    async def coordinate(client, session, brief, today):
+        raise ExceptionGroup("judge", [ConnectionError("down"), ConnectionError("still down")])
+
+    report = await run_cases(
+        [eval_case("raises", None)],
+        fake_client(),
+        fake_client(),
+        coordinate=coordinate,
+        open_session=connect,
+    )
+
+    assert report.cases[0].error == "ConnectionError: down"

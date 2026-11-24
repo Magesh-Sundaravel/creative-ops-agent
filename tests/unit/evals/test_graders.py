@@ -2,6 +2,9 @@ from collections.abc import Sequence
 from datetime import date
 from decimal import Decimal
 
+import pytest
+from anthropic import APIConnectionError
+
 from creative_ops.agents.coordinator import (
     CampaignOutcome,
     CoordinatorResult,
@@ -10,6 +13,7 @@ from creative_ops.agents.coordinator import (
 )
 from creative_ops.agents.handoff import HandoffPackage, RightsSummary
 from creative_ops.agents.intake import CampaignIntake, IntakeResult
+from creative_ops.config import get_settings
 from creative_ops.loop.agent_loop import LoopResult, StopOutcome, TokenUsage
 from creative_ops.schemas.brief import Budget, Deliverable, StructuredBrief
 from evals.cases import EvalCase, ExpectedCampaign
@@ -27,6 +31,7 @@ def eval_case(
     escalation: EscalationReason | None = None,
     campaigns: Sequence[ExpectedCampaign] = (),
     briefs: Sequence[StructuredBrief] = (),
+    ambiguities: Sequence[str] = (),
 ) -> EvalCase:
     return EvalCase.model_validate(
         {
@@ -43,7 +48,7 @@ def eval_case(
                         for c in campaigns
                     ]
                 ],
-                "ambiguities": [],
+                "ambiguities": list(ambiguities),
                 "escalation": escalation,
                 "campaigns": list(campaigns),
             },
@@ -70,23 +75,24 @@ def package(brand: str, campaign_name: str) -> HandoffPackage:
     )
 
 
-def intake(briefs: Sequence[StructuredBrief]) -> IntakeResult:
+def intake(briefs: Sequence[StructuredBrief], ambiguities: Sequence[str] = ()) -> IntakeResult:
     campaigns = [
         CampaignIntake(brief=b, missing_fields=[], critical_fields=[], critical_missing=False)
         for b in briefs
     ]
-    return IntakeResult(campaigns=campaigns, ambiguities=[], loop_result=LOOP)
+    return IntakeResult(campaigns=campaigns, ambiguities=list(ambiguities), loop_result=LOOP)
 
 
 def result(
     campaigns: Sequence[CampaignOutcome] = (),
     brief_escalation: Escalation | None = None,
     briefs: Sequence[StructuredBrief] | None = None,
+    ambiguities: Sequence[str] = (),
 ) -> CoordinatorResult:
     return CoordinatorResult(
         campaigns=list(campaigns),
         escalation=brief_escalation,
-        intakes=[] if briefs is None else [intake(briefs)],
+        intakes=[] if briefs is None else [intake(briefs, ambiguities)],
         reviews=[],
         failed_runs=[],
         loop_result=LOOP,
@@ -227,7 +233,6 @@ WINTER_BRIEF = StructuredBrief.model_validate(
         "brand": "Loomhouse",
         "campaign_name": "Winter Knit Edit",
         "season": "AW31",
-        "objective": "Launch the winter knitwear range",
         "deliverables": [
             {"asset_type": "image", "channel": "instagram", "format_or_dimensions": "1080x1350"},
             {"asset_type": "image", "channel": "instagram", "format_or_dimensions": "1080x1920"},
@@ -518,3 +523,215 @@ async def test_grade_case_a_campaign_named_twice_pairs_both_without_field_grades
     assert count_grade(grades).passed
     assert field_grades(grades) == []
     assert grades.passed
+
+
+JUDGED_FIELDS = ["objective", "key_message", "target_audience", "usage_rights"]
+
+JUDGED_BRIEF = WINTER_BRIEF.model_copy(
+    update={
+        "objective": "Launch the winter knitwear range",
+        "key_message": "Warmth without bulk",
+        "target_audience": "Women 25-40 in UK cities",
+        "usage_rights": "UK and Ireland, paid social and email, 12 months",
+    }
+)
+
+PARAPHRASED_BRIEF = WINTER_BRIEF.model_copy(
+    update={
+        "objective": "Introduce the new winter knitwear line",
+        "key_message": "Warm, never bulky",
+        "target_audience": "Urban UK women aged 25 to 40",
+        "usage_rights": "Paid social and email in the UK and Ireland for a year",
+    }
+)
+
+
+def verdict(make_message, passed: bool, reason: str = "Same meaning."):
+    return make_message(
+        "tool_use",
+        tool_uses=[
+            {
+                "id": "toolu_verdict",
+                "name": "submit_verdict",
+                "input": {"passed": passed, "reason": reason},
+            }
+        ],
+    )
+
+
+def judge_grades(grades):
+    return [(g.campaign, g.field, g.passed, g.reason) for g in grades.grades if g.grader == "judge"]
+
+
+def field_judge_grades(grades):
+    return [g for g in judge_grades(grades) if g[1] in JUDGED_FIELDS]
+
+
+async def grade_judged(judge, produced: StructuredBrief = PARAPHRASED_BRIEF):
+    return await grade_case(
+        eval_case(campaigns=[WINTER], briefs=[JUDGED_BRIEF]),
+        result([unfinished("Loomhouse", "Winter Knit Edit")], briefs=[produced]),
+        judge,
+    )
+
+
+async def test_grade_case_judge_passes_each_free_text_field(fake_client, make_message):
+    judge = fake_client(*[verdict(make_message, True) for _ in JUDGED_FIELDS])
+
+    grades = await grade_judged(judge)
+
+    assert field_judge_grades(grades) == [
+        ("Loomhouse / Winter Knit Edit", field, True, "Same meaning.") for field in JUDGED_FIELDS
+    ]
+
+
+@pytest.mark.parametrize("failing", JUDGED_FIELDS)
+async def test_grade_case_judge_fail_fails_its_field_with_the_reason(
+    fake_client, make_message, failing
+):
+    judge = fake_client(
+        *[
+            verdict(make_message, field != failing, "Says summer, not winter.")
+            for field in JUDGED_FIELDS
+        ]
+    )
+
+    grades = await grade_judged(judge)
+
+    failed = [
+        (field, reason) for _, field, passed, reason in field_judge_grades(grades) if not passed
+    ]
+    assert failed == [(failing, "Says summer, not winter.")]
+    assert not grades.passed
+
+
+async def test_grade_case_judge_forces_its_tool_on_the_fast_model(
+    fake_client, make_message, monkeypatch
+):
+    monkeypatch.setenv("MODEL_FAST", "fast-test-model")
+    get_settings.cache_clear()
+    produced = JUDGED_BRIEF.model_copy(update={"objective": "Sell more winter knits"})
+    judge = fake_client(*[verdict(make_message, True) for _ in JUDGED_FIELDS])
+
+    try:
+        await grade_judged(judge, produced)
+    finally:
+        get_settings.cache_clear()
+
+    call = judge.messages.calls[0]
+    assert call["model"] == "fast-test-model"
+    assert call["temperature"] == 0
+    assert call["tool_choice"] == {"type": "tool", "name": "submit_verdict"}
+    assert [t["name"] for t in call["tools"]] == ["submit_verdict"]
+    prompt = call["messages"][0]["content"]
+    assert "Launch the winter knitwear range" in prompt
+    assert "Sell more winter knits" in prompt
+
+
+async def test_grade_case_free_text_empty_on_one_side_fails_without_a_judge_call(fake_client):
+    expected = WINTER_BRIEF.model_copy(update={"objective": "Launch the winter knitwear range"})
+    produced = WINTER_BRIEF.model_copy(update={"key_message": "Warmth without bulk"})
+    judge = fake_client()
+
+    grades = await grade_case(
+        eval_case(campaigns=[WINTER], briefs=[expected]),
+        result([unfinished("Loomhouse", "Winter Knit Edit")], briefs=[produced]),
+        judge,
+    )
+
+    assert [(field, passed) for _, field, passed, _ in field_judge_grades(grades)] == [
+        ("objective", False),
+        ("key_message", False),
+        ("target_audience", True),
+        ("usage_rights", True),
+    ]
+    assert judge.messages.calls == []
+
+
+SUMMER = ExpectedCampaign(brand="Loomhouse", campaign_name="Summer Linen", outcome="handed_off")
+
+
+async def test_grade_case_judges_ambiguities_once_per_case(fake_client, make_message):
+    summer = StructuredBrief(brand="Loomhouse", campaign_name="Summer Linen")
+    briefs = [WINTER_BRIEF, summer]
+    judge = fake_client(verdict(make_message, False, "Invents a budget Ambiguity."))
+
+    grades = await grade_case(
+        eval_case(campaigns=[WINTER, SUMMER], briefs=briefs, ambiguities=["Two deadlines given"]),
+        result(
+            [unfinished("Loomhouse", "Winter Knit Edit"), unfinished("Loomhouse", "Summer Linen")],
+            briefs=briefs,
+            ambiguities=["Deadline unclear: 1 or 15 Nov", "Budget range given"],
+        ),
+        judge,
+    )
+
+    assert [g for g in judge_grades(grades) if g[1] == "ambiguities"] == [
+        (None, "ambiguities", False, "Invents a budget Ambiguity.")
+    ]
+    prompt = judge.messages.calls[0]["messages"][0]["content"]
+    assert "Two deadlines given" in prompt
+    assert "Budget range given" in prompt
+    assert len(judge.messages.calls) == 1
+
+
+async def test_grade_case_with_no_campaigns_makes_no_judge_calls(fake_client):
+    unnamed = StructuredBrief(brand="Loomhouse", objective="Launch knitwear")
+    produced = result(
+        brief_escalation=escalation("unnamed_campaign"),
+        briefs=[unnamed],
+        ambiguities=["No campaign name given"],
+    )
+    judge = fake_client()
+
+    grades = await grade_case(eval_case(escalation="unnamed_campaign"), produced, judge)
+
+    assert judge_grades(grades) == []
+    assert judge.messages.calls == []
+
+
+async def test_grade_case_free_text_matching_exactly_passes_without_a_judge_call(fake_client):
+    produced = JUDGED_BRIEF.model_copy(update={"objective": " launch the WINTER knitwear range"})
+    judge = fake_client()
+
+    grades = await grade_judged(judge, JUDGED_BRIEF)
+
+    assert all(passed for _, _, passed, _ in field_judge_grades(grades))
+    assert judge.messages.calls == []
+    grades = await grade_judged(judge, produced)
+
+    assert all(passed for _, _, passed, _ in field_judge_grades(grades))
+    assert judge.messages.calls == []
+
+
+async def test_grade_case_judge_reply_without_a_verdict_fails_only_its_field(
+    fake_client, make_message
+):
+    judge = fake_client(
+        make_message("end_turn", text="Looks fine."),
+        *[verdict(make_message, True) for _ in JUDGED_FIELDS[1:]],
+    )
+
+    grades = await grade_judged(judge)
+
+    by_field = {field: (passed, reason) for _, field, passed, reason in field_judge_grades(grades)}
+    assert not by_field["objective"][0]
+    assert by_field["objective"][1].startswith("Judge failed")
+    assert [by_field[f][0] for f in JUDGED_FIELDS[1:]] == [True] * 3
+    assert all(passed for _, _, passed in field_grades(grades))
+
+
+class UnreachableMessages:
+    async def create(self, **kwargs):
+        raise APIConnectionError(request=None)
+
+
+class UnreachableClient:
+    messages = UnreachableMessages()
+
+
+async def test_grade_case_judge_api_error_propagates():
+    with pytest.raises(ExceptionGroup) as raised:
+        await grade_judged(UnreachableClient())
+
+    assert raised.group_contains(APIConnectionError)

@@ -95,8 +95,11 @@ async def _run_case(
 
 
 def _error(exc: BaseException) -> str:
-    """The exception as `Name: message`, unwrapped from groups of one (an MCP session's)."""
-    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1:
+    """The exception as `Name: message`, unwrapped from groups (an MCP session's, the Judge's).
+
+    A group of several is shown as its first exception.
+    """
+    while isinstance(exc, BaseExceptionGroup):
         exc = exc.exceptions[0]
     return f"{type(exc).__name__}: {exc}"
 

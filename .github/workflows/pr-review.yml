@@ -1,0 +1,67 @@
+name: PR review
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "mcp_server/**"
+      - "evals/**"
+      - "tests/**"
+      - "ui/**"
+      - ".github/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "CLAUDE.md"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-review:
+    # Fork and Dependabot PRs get no secrets; skip them.
+    if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install -g @anthropic-ai/claude-code@2.1.331
+      - name: Run claude -p
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git diff "origin/$BASE_REF...HEAD" > pr.diff
+          claude -p "$(cat .github/pr-review/prompt.md)" \
+            --model claude-haiku-5-5 \
+            --allowedTools "Read" "Grep" "Glob" "Bash(git diff origin/*)" "Bash(git log:*)" \
+            --output-format json \
+            --json-schema "$(cat .github/pr-review/schema.json)" \
+            > result.json
+          jq -e '.is_error == false and (.structured_output | type == "object")' result.json
+          jq '.structured_output' result.json > findings.json
+      - name: Validate findings against schema
+        run: uvx check-jsonschema==0.39.0 --schemafile .github/pr-review/schema.json findings.json
+      - name: Write job summary
+        run: |
+          {
+            echo "## PR review"
+            echo
+            if [ "$(jq '.findings | length' findings.json)" -eq 0 ]; then
+              echo "No findings."
+            else
+              echo "| Severity | Location | Summary | Failure scenario |"
+              echo "|---|---|---|---|"
+              jq -r 'def esc: gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;");
+                .findings[] | "| \(.severity) | `\(.file | esc):\(.line)` | \(.summary | esc) | \(.failure_scenario | esc) |"' findings.json
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

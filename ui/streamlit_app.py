@@ -1,6 +1,7 @@
 """Streamlit UI: submit a Brief and see its campaign outcomes and open Escalations."""
 
 import asyncio
+from typing import Any
 
 import httpx
 import streamlit as st
@@ -11,10 +12,12 @@ from creative_ops.agents.coordinator import (
     Amend,
     CampaignOutcome,
     ConfirmTask,
+    CoordinatorResult,
     Escalation,
     Retry,
 )
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
+from creative_ops.loop.agent_loop import LoopResult, TokenUsage
 
 
 class UISettings(BaseSettings):
@@ -140,6 +143,47 @@ def escalation_view(escalation: Escalation, title: str) -> None:
             st.markdown(f"- Ambiguity: {ambiguity}")
 
 
+def trace_runs(
+    results: list[CoordinatorResult],
+) -> list[tuple[str, list[dict[str, Any]], TokenUsage, str | None]]:
+    """Every Run across the results in order, as (agent, messages, usage, error).
+
+    A Handoff carried into a later result is shown once.
+    """
+    runs: list[tuple[str, list[dict[str, Any]], TokenUsage, str | None]] = []
+    seen: set[str] = set()
+
+    def add(agent: str, run: LoopResult) -> None:
+        key = run.model_dump_json()
+        if key not in seen:
+            seen.add(key)
+            runs.append((agent, run.messages, run.usage, None))
+
+    for result in results:
+        if result.loop_result:
+            add("coordinator", result.loop_result)
+        for intake in result.intakes:
+            add("intake", intake.loop_result)
+        for review in result.reviews:
+            add("review", review.loop_result)
+        for campaign in result.campaigns:
+            if campaign.handoff:
+                add("handoff", campaign.handoff.loop_result)
+        for failed in result.failed_runs:
+            runs.append((f"{failed.agent} (failed)", failed.messages, failed.usage, failed.error))
+    return runs
+
+
+def trace_view(results: list[CoordinatorResult]) -> None:
+    """The Trace: one section per Run with its token usage and its messages as raw JSON."""
+    for n, (agent, messages, usage, error) in enumerate(trace_runs(results), start=1):
+        st.markdown(f"**{n}. {agent}**")
+        if error:
+            st.error(error)
+        st.caption(f"{usage.input_tokens} input tokens, {usage.output_tokens} output tokens")
+        st.json(messages, expanded=False)
+
+
 def brief_pane(brief_id: str) -> None:
     """The selected Brief's status, campaign outcomes and open Escalations."""
     try:
@@ -166,6 +210,9 @@ def brief_pane(brief_id: str) -> None:
                 open_escalations.append((campaign.escalation, campaign))
         if brief.status == "escalated":
             answer_controls(brief_id, open_escalations, str(len(brief.results)))
+    if brief.results:
+        with st.expander("Trace"):
+            trace_view(brief.results)
     if brief.amendments:
         st.markdown("**Amendments**")
         for amendment in brief.amendments:

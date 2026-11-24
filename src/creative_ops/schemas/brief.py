@@ -18,7 +18,13 @@ OptionalStr = Annotated[str | None, BeforeValidator(_blank_to_none)]
 class Deliverable(BaseModel):
     """One piece of work the Brief asks for."""
 
-    asset_type: OptionalStr = None
+    asset_type: OptionalStr = Field(
+        None,
+        description=(
+            'Kind of asset only, such as "image" or "video". '
+            "The placement (feed, story, header, hero) is not part of it."
+        ),
+    )
     channel: OptionalStr = Field(
         None,
         description=(

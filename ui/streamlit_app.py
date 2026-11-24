@@ -26,8 +26,8 @@ class UISettings(BaseSettings):
 
 
 API = UISettings().api_url
+# A failed request, or a body that isn't the shape the API promises.
 API_ERRORS = (httpx.HTTPError, ValueError)
-"""A failed request, or a body that isn't the shape the API promises."""
 
 st.set_page_config(page_title="Creative Ops", layout="wide")
 

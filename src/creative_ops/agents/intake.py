@@ -12,8 +12,9 @@ from creative_ops.tools.tool import Tool
 SYSTEM_PROMPT = """\
 You are an intake agent for a creative agency. Read the Brief and record it by calling \
 `submit_brief`, with one Structured Brief per campaign the Brief names. Extract only what \
-the Brief states; leave any field it does not give empty. List anything unclear or \
-contradictory in the Brief as an ambiguity. Today's date is {today}.
+the Brief states; leave any field it does not give empty. An ambiguity quotes something \
+the Brief states that is unclear or contradicts itself. An empty field or an unstated \
+detail is not an ambiguity. Today's date is {today}.
 
 Rules:
 - Resolve a date with no year against today's date, to its next occurrence on or after today. \

@@ -1,7 +1,8 @@
 """Run the Eval Cases through the Coordinator: `uv run python evals/run_evals.py [--case <id>]`.
 
 Each case runs once, against a fresh client stack, three at a time. Prints a pass/fail
-table and per-Grader scores, and writes the full report as JSON under `evals/results/`.
+table and scores per Grader and per field, and writes the full report as JSON under
+`evals/results/`.
 """
 
 import argparse
@@ -53,10 +54,11 @@ class GraderScore(BaseModel):
 
 
 class Report(BaseModel):
-    """Every case's result and the pooled per-Grader scores."""
+    """Every case's result and the scores pooled per Grader and per field."""
 
     cases: list[CaseResult]
     scores: dict[str, GraderScore]
+    field_scores: dict[str, GraderScore]
 
 
 def _usage(result: CoordinatorResult) -> TokenUsage:
@@ -116,11 +118,13 @@ async def run_cases(
 
     results = await asyncio.gather(*(bounded(c) for c in cases))
     scores: dict[str, GraderScore] = {}
+    field_scores: dict[str, GraderScore] = {}
     for grade in (g for r in results for g in r.grades):
-        score = scores.setdefault(grade.grader, GraderScore(passed=0, total=0))
-        score.passed += grade.passed
-        score.total += 1
-    return Report(cases=list(results), scores=scores)
+        for pooled, key in [(scores, grade.grader), (field_scores, grade.field)]:
+            score = pooled.setdefault(key, GraderScore(passed=0, total=0))
+            score.passed += grade.passed
+            score.total += 1
+    return Report(cases=list(results), scores=scores, field_scores=field_scores)
 
 
 def select_cases(cases: list[EvalCase], case_id: str | None) -> list[EvalCase]:
@@ -134,7 +138,7 @@ def select_cases(cases: list[EvalCase], case_id: str | None) -> list[EvalCase]:
 
 
 def _print_report(report: Report) -> None:
-    """A pass/fail line per case with its failed Grades, then the per-Grader scores."""
+    """A pass/fail line per case with its failed Grades, then scores per Grader and per field."""
     for case in report.cases:
         print(f"{'PASS' if case.passed else 'FAIL'}  {case.case_id}")
         if case.error:
@@ -146,6 +150,9 @@ def _print_report(report: Report) -> None:
     print(f"\nCases: {passed}/{len(report.cases)} passed")
     for grader, score in report.scores.items():
         print(f"{grader}: {score.passed}/{score.total}")
+    print()
+    for field, score in report.field_scores.items():
+        print(f"  {field}: {score.passed}/{score.total}")
 
 
 def main(argv: Sequence[str] | None = None) -> None:

@@ -75,6 +75,10 @@ async def test_run_cases_records_a_result_per_case_and_a_raising_run_as_failed(
     assert by_id["raises"].error == "RuntimeError: boom"
     assert by_id["raises"].grades == []
     assert report.scores["outcome"].model_dump() == {"passed": 1, "total": 2}
+    assert {f: s.model_dump() for f, s in report.field_scores.items()} == {
+        "brief_escalation": {"passed": 1, "total": 2},
+        "campaign_count": {"passed": 2, "total": 2},
+    }
 
 
 def test_select_cases_with_an_id_keeps_only_that_case():

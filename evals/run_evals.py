@@ -2,7 +2,8 @@
 
 Each case runs once, against a fresh client stack, three at a time. Prints a pass/fail
 table and scores per Grader and per field, and writes the full report as JSON under
-`evals/results/`. Exits 1 if any case's Run raised; failed Grades alone exit 0.
+`evals/results/`. Exits 1 if any case's Run raised, no case ran, or the share of passed
+cases is below `--min-pass-rate`.
 """
 
 import argparse
@@ -30,6 +31,7 @@ from evals.graders import Grade, grade_case
 logger = logging.getLogger(__name__)
 
 CONCURRENCY = 3
+MIN_PASS_RATE = 0.9
 RESULTS_DIR = Path(__file__).parent / "results"
 
 Coordinate = Callable[[AsyncAnthropic, Client, str, date], Awaitable[CoordinatorResult]]
@@ -158,14 +160,38 @@ def _print_report(report: Report) -> None:
         print(f"  {field}: {score.passed}/{score.total}")
 
 
+def gate_failure(report: Report, min_pass_rate: float) -> str | None:
+    """Why the eval fails CI, or None if it passes.
+
+    It fails on a case whose Run raised, an empty case set, or a pass rate below the threshold.
+    """
+    if not report.cases:
+        return "no Eval Cases ran"
+    errored = sum(c.error is not None for c in report.cases)
+    if errored:
+        return f"{errored} case(s) raised"
+    rate = sum(c.passed for c in report.cases) / len(report.cases)
+    if rate < min_pass_rate:
+        return f"pass rate {rate:.2f} is below {min_pass_rate:.2f}"
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     """Run the selected Eval Cases against the live API, print and save the report.
 
-    Exits 1 if any case's Run raised; failed Grades alone still exit 0.
+    Exits 1 per `gate_failure`.
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", help="Run only the Eval Case with this id.")
+    parser.add_argument(
+        "--min-pass-rate",
+        type=float,
+        default=MIN_PASS_RATE,
+        help="Exit 1 if the share of passed cases is below this (default %(default)s).",
+    )
     args = parser.parse_args(argv)
+    if not 0 <= args.min_pass_rate <= 1:
+        parser.error("--min-pass-rate must be between 0 and 1")
     try:
         cases = select_cases(load_cases(), args.case)
     except ValueError as exc:
@@ -178,7 +204,9 @@ def main(argv: Sequence[str] | None = None) -> None:
     path = RESULTS_DIR / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"
     path.write_text(report.model_dump_json(indent=2))
     print(f"\nReport: {path}")
-    if any(c.error for c in report.cases):
+    failure = gate_failure(report, args.min_pass_rate)
+    if failure:
+        print(f"FAILED: {failure}")
         sys.exit(1)
 
 

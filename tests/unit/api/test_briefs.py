@@ -217,15 +217,22 @@ def test_resume_result_sets_escalated_again(http, fakes):
     assert len(body["results"]) == 2
 
 
-def test_resume_raising_marks_failed(http, fakes):
+def test_resume_raising_keeps_the_brief_answerable_and_drops_the_amendment(http, fakes):
     brief_id = _escalated(http, fakes)
     fakes.resume_error = RuntimeError("down")
 
     http.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "More"})
 
-    body = _wait(http, brief_id, "failed")
+    body = _wait(http, brief_id, "escalated")
     assert body["error"] == "RuntimeError: down"
+    assert body["amendments"] == []
     assert len(body["results"]) == 1
+    fakes.resume_error = None
+    retry = http.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "Again"})
+    assert retry.status_code == 202
+    body = _wait(http, brief_id, "done")
+    assert body["error"] is None
+    assert body["amendments"] == ["Again"]
 
 
 def test_answer_while_running_is_409(http, fakes):

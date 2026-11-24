@@ -67,6 +67,8 @@ def _send(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> N
     except httpx.HTTPStatusError as exc:
         try:
             detail = exc.response.json()["detail"]
+            if isinstance(detail, list):  # FastAPI's validation errors
+                detail = "; ".join(str(item["msg"]) for item in detail)
         except (ValueError, KeyError, TypeError):
             detail = exc.response.text or str(exc)
         st.error(str(detail))
@@ -81,16 +83,27 @@ def _send(brief_id: str, answer: Amend | Acknowledge | Retry | ConfirmTask) -> N
 
 
 def answer_controls(
-    brief_id: str, escalation: Escalation, key: str, campaign: CampaignOutcome | None
+    brief_id: str, escalations: list[tuple[Escalation, CampaignOutcome | None]], key: str
 ) -> None:
-    """The control that matches the kind of answer the Escalation takes."""
-    if escalation.answer == "amend":
-        text = st.text_area("Amendment", key=f"amend-{key}")
+    """One control per kind of answer the open Escalations take; ConfirmTask is per campaign."""
+    kinds = {e.answer for e, _ in escalations}
+    if "amend" in kinds:
+        text = st.text_area("Amendment (applies to the whole Brief)", key=f"amend-{key}")
         if st.button("Amend", key=f"amend-button-{key}", disabled=not text.strip()):
             _send(brief_id, Amend(text=text))
-    elif escalation.answer == "confirm_task" and campaign:
-        exists = st.radio("Task exists?", ["Yes", "No"], key=f"confirm-{key}", horizontal=True)
-        if st.button("Confirm", key=f"confirm-button-{key}"):
+    if "acknowledge" in kinds and st.button("Acknowledge all", key=f"acknowledge-{key}"):
+        _send(brief_id, Acknowledge())
+    if "retry" in kinds and st.button("Retry the Brief", key=f"retry-{key}"):
+        _send(brief_id, Retry())
+    for i, (escalation, campaign) in enumerate(escalations):
+        if escalation.answer != "confirm_task":
+            continue
+        if campaign is None:
+            st.warning("This Escalation needs a Task check, but names no campaign to answer.")
+            continue
+        label = f"{campaign.brand} / {campaign.campaign_name}"
+        exists = st.radio(f"Task exists for {label}?", ["Yes", "No"], key=f"confirm-{i}-{key}")
+        if st.button("Confirm", key=f"confirm-button-{i}-{key}"):
             _send(
                 brief_id,
                 ConfirmTask(
@@ -99,10 +112,6 @@ def answer_controls(
                     task_exists=exists == "Yes",
                 ),
             )
-    elif escalation.answer != "confirm_task" and st.button(
-        escalation.answer.capitalize(), key=f"{escalation.answer}-{key}"
-    ):
-        _send(brief_id, Acknowledge() if escalation.answer == "acknowledge" else Retry())
 
 
 def outcome_card(campaign: CampaignOutcome) -> None:
@@ -147,17 +156,16 @@ def brief_pane(brief_id: str) -> None:
         result = brief.results[-1]
         for campaign in result.campaigns:
             outcome_card(campaign)
+        open_escalations: list[tuple[Escalation, CampaignOutcome | None]] = []
         if result.escalation:
             escalation_view(result.escalation, "Brief")
-            if brief.status == "escalated":
-                answer_controls(brief_id, result.escalation, f"brief-{len(brief.results)}", None)
-        for i, campaign in enumerate(result.campaigns):
+            open_escalations.append((result.escalation, None))
+        for campaign in result.campaigns:
             if campaign.escalation:
                 escalation_view(campaign.escalation, f"{campaign.brand} / {campaign.campaign_name}")
-                if brief.status == "escalated":
-                    answer_controls(
-                        brief_id, campaign.escalation, f"{i}-{len(brief.results)}", campaign
-                    )
+                open_escalations.append((campaign.escalation, campaign))
+        if brief.status == "escalated":
+            answer_controls(brief_id, open_escalations, str(len(brief.results)))
     if brief.amendments:
         st.markdown("**Amendments**")
         for amendment in brief.amendments:

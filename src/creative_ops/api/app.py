@@ -51,8 +51,10 @@ def create_app(
         except Exception as exc:
             logger.exception("Run failed for Brief %s", record.id)
             record.error = f"{type(exc).__name__}: {exc}"
-            record.status = "failed"
+            # A failed resume leaves the Escalation open to answer again.
+            record.status = "failed" if record.state is None else "escalated"
             return
+        record.error = None
         record.results.append(result)
         record.state = result.state
         record.status = "escalated" if result.state else "done"
@@ -110,10 +112,15 @@ def create_app(
         except AnswerDoesNotFit as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         state = record.state
-        if isinstance(body, Amend):
-            record.amendments.append(body.text)
+
+        async def resume_brief() -> CoordinatorResult:
+            result = await resume(client, sessions[0], state, body, date.today())
+            if isinstance(body, Amend):
+                record.amendments.append(body.text)  # only once the amended Run has run
+            return result
+
         record.status = "running"
-        spawn(record, lambda: resume(client, sessions[0], state, body, date.today()))
+        spawn(record, resume_brief)
         return BriefId(id=record.id)
 
     @app.get("/briefs")

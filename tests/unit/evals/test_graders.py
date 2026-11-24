@@ -620,7 +620,7 @@ async def test_grade_case_judge_forces_its_tool_on_the_fast_model(
 
     call = judge.messages.calls[0]
     assert call["model"] == "fast-test-model"
-    assert call["temperature"] == 0
+    assert "temperature" not in call  # SDK 2.x rejects sampling parameters
     assert call["tool_choice"] == {"type": "tool", "name": "submit_verdict"}
     assert [t["name"] for t in call["tools"]] == ["submit_verdict"]
     prompt = call["messages"][0]["content"]

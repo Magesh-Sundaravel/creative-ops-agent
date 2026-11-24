@@ -2,7 +2,7 @@
 
 Each case runs once, against a fresh client stack, three at a time. Prints a pass/fail
 table and scores per Grader and per field, and writes the full report as JSON under
-`evals/results/`.
+`evals/results/`. Exits 1 if any case's Run raised; failed Grades alone exit 0.
 """
 
 import argparse
@@ -159,7 +159,10 @@ def _print_report(report: Report) -> None:
 
 
 def main(argv: Sequence[str] | None = None) -> None:
-    """Run the selected Eval Cases against the live API, print and save the report."""
+    """Run the selected Eval Cases against the live API, print and save the report.
+
+    Exits 1 if any case's Run raised; failed Grades alone still exit 0.
+    """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--case", help="Run only the Eval Case with this id.")
     args = parser.parse_args(argv)
@@ -175,6 +178,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     path = RESULTS_DIR / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"
     path.write_text(report.model_dump_json(indent=2))
     print(f"\nReport: {path}")
+    if any(c.error for c in report.cases):
+        sys.exit(1)
 
 
 if __name__ == "__main__":

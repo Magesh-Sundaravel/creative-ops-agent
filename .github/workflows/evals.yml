@@ -1,0 +1,54 @@
+name: Evals
+
+# Advisory: failed grades stay green; the job fails only when a case errored (runner exit 1).
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "mcp_server/**"
+      - "evals/**"
+      - ".github/workflows/evals.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: evals-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evals:
+    # Fork and Dependabot PRs get no secrets; skip them.
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version-file: .python-version
+      - run: uv sync --frozen
+      - name: Run evals
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        shell: bash # -eo pipefail, so the runner's exit 1 survives the pipe to tee
+        run: uv run python evals/run_evals.py 2>&1 | tee evals.log
+      - name: Write job summary
+        if: always()
+        run: |
+          {
+            echo "## Evals"
+            echo
+            echo '```'
+            cat evals.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: evals/results/*.json
+          if-no-files-found: ignore

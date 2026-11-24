@@ -356,3 +356,23 @@ async def test_system_prompt_states_the_extraction_rules(fake_client, make_messa
         await intake(client, BRIEF)
 
     assert rule.lower() in client.messages.calls[0]["system"].lower()
+
+
+@pytest.mark.parametrize(
+    ("field", "rule"),
+    [
+        ("channel", "platform name only"),
+        ("format_or_dimensions", "WxH only"),
+    ],
+)
+async def test_submit_brief_schema_states_the_plain_deliverable_form(
+    fake_client, make_message, field, rule
+):
+    client = fake_client(make_message("end_turn"))
+
+    with pytest.raises(NoValidSubmission):
+        await intake(client, BRIEF)
+
+    (tool,) = client.messages.calls[0]["tools"]
+    description = tool["input_schema"]["$defs"]["Deliverable"]["properties"][field]["description"]
+    assert rule.lower() in description.lower()

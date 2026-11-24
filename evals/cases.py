@@ -1,5 +1,6 @@
 """Eval Case: a Brief, the date it is run as of, and what it should produce."""
 
+from collections import Counter
 from datetime import date
 from pathlib import Path
 from typing import Literal, Self
@@ -10,6 +11,11 @@ from creative_ops.agents.coordinator import EscalationReason
 from creative_ops.schemas.brief import StructuredBrief
 
 DATASETS_DIR = Path(__file__).parent / "datasets"
+
+
+def campaign_key(brand: str | None, campaign_name: str | None) -> tuple[str, str]:
+    """A campaign's pairing key: brand and campaign name, lower-cased and stripped."""
+    return ((brand or "").strip().lower(), (campaign_name or "").strip().lower())
 
 
 class ExpectedCampaign(BaseModel):
@@ -38,6 +44,18 @@ class Expected(BaseModel):
     escalation: EscalationReason | None
     """The Brief-level Escalation reason, or None."""
     campaigns: list[ExpectedCampaign]
+
+    @model_validator(mode="after")
+    def _briefs_match_campaigns(self) -> Self:
+        """Outcome grades (on campaigns) and field grades (on briefs) cover the same campaigns."""
+        briefs = Counter(campaign_key(b.brand, b.campaign_name) for b in self.briefs)
+        campaigns = Counter(campaign_key(c.brand, c.campaign_name) for c in self.campaigns)
+        if briefs != campaigns:
+            raise ValueError(
+                f"expected briefs and campaigns differ: briefs only {sorted(briefs - campaigns)}, "
+                f"campaigns only {sorted(campaigns - briefs)}"
+            )
+        return self
 
 
 class EvalCase(BaseModel):

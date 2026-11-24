@@ -98,7 +98,7 @@ def answer_controls(
     for i, (escalation, campaign) in enumerate(escalations):
         if escalation.answer != "confirm_task":
             continue
-        if campaign is None:
+        if campaign is None or campaign.brand is None or campaign.campaign_name is None:
             st.warning("This Escalation needs a Task check, but names no campaign to answer.")
             continue
         label = f"{campaign.brand} / {campaign.campaign_name}"
@@ -107,8 +107,8 @@ def answer_controls(
             _send(
                 brief_id,
                 ConfirmTask(
-                    brand=campaign.brand or "",
-                    campaign_name=campaign.campaign_name or "",
+                    brand=campaign.brand,
+                    campaign_name=campaign.campaign_name,
                     task_exists=exists == "Yes",
                 ),
             )

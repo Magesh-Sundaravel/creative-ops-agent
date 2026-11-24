@@ -107,6 +107,8 @@ def create_app(
             raise HTTPException(status_code=404, detail="No such Brief.")
         if record.status != "escalated" or record.state is None:
             raise HTTPException(status_code=409, detail=f"The Brief is {record.status}.")
+        if isinstance(body, Amend) and not body.text.strip():
+            raise HTTPException(status_code=422, detail="An Amendment can't be empty.")
         try:
             check_answer(record.state, body)
         except AnswerDoesNotFit as exc:
@@ -120,6 +122,7 @@ def create_app(
             return result
 
         record.status = "running"
+        record.error = None
         spawn(record, resume_brief)
         return BriefId(id=record.id)
 

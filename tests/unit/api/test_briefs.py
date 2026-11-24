@@ -316,3 +316,27 @@ def test_unknown_answer_kind_is_422(http, fakes):
     brief_id = _escalated(http, fakes)
 
     assert http.post(f"/briefs/{brief_id}/answers", json={"kind": "nope"}).status_code == 422
+
+
+def test_blank_amend_is_422_and_runs_nothing(http, fakes):
+    brief_id = _escalated(http, fakes)
+
+    response = http.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "  "})
+
+    assert response.status_code == 422
+    assert fakes.resumes == []
+    assert http.get(f"/briefs/{brief_id}").json()["status"] == "escalated"
+
+
+def test_error_is_cleared_when_the_next_answer_is_accepted(http, fakes):
+    brief_id = _escalated(http, fakes)
+    fakes.resume_error = RuntimeError("down")
+    http.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "More"})
+    _wait(http, brief_id, "escalated")
+    fakes.resume_error = None
+    fakes.resume_gate = threading.Event()
+
+    http.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "Again"})
+
+    assert http.get(f"/briefs/{brief_id}").json()["error"] is None
+    fakes.resume_gate.set()

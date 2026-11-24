@@ -1,11 +1,22 @@
 """Streamlit UI: submit a Brief and see its campaign outcomes and open Escalations."""
 
+import asyncio
+
 import httpx
 import streamlit as st
-from settings import UISettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from creative_ops.agents.coordinator import CampaignOutcome, Escalation
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
+
+
+class UISettings(BaseSettings):
+    """The UI needs only where the API is; it never holds the Anthropic key."""
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    api_url: str = "http://localhost:8000"
+
 
 API = UISettings().api_url
 API_ERRORS = (httpx.HTTPError, ValueError)
@@ -14,18 +25,27 @@ API_ERRORS = (httpx.HTTPError, ValueError)
 st.set_page_config(page_title="Creative Ops", layout="wide")
 
 
+async def _request(method: str, path: str, **kwargs) -> object:
+    """One API call; the JSON body of a successful response."""
+    async with httpx.AsyncClient(base_url=API, timeout=10) as client:
+        response = await client.request(method, path, **kwargs)
+    response.raise_for_status()
+    return response.json()
+
+
 def get_brief(brief_id: str) -> BriefDetail:
     """One Brief from the API."""
-    response = httpx.get(f"{API}/briefs/{brief_id}", timeout=10)
-    response.raise_for_status()
-    return BriefDetail.model_validate(response.json())
+    return BriefDetail.model_validate(asyncio.run(_request("GET", f"/briefs/{brief_id}")))
 
 
 def list_briefs() -> list[BriefSummary]:
     """Every Brief from the API, newest first."""
-    response = httpx.get(f"{API}/briefs", timeout=10)
-    response.raise_for_status()
-    return [BriefSummary.model_validate(item) for item in response.json()]
+    return [BriefSummary.model_validate(item) for item in asyncio.run(_request("GET", "/briefs"))]
+
+
+def submit_brief(text: str) -> str:
+    """Submit a Brief; the id the API gave it."""
+    return BriefId.model_validate(asyncio.run(_request("POST", "/briefs", json={"text": text}))).id
 
 
 def outcome_card(campaign: CampaignOutcome) -> None:
@@ -81,9 +101,7 @@ with st.sidebar:
     text = st.text_area("New Brief")
     if st.button("Submit"):
         try:
-            response = httpx.post(f"{API}/briefs", json={"text": text}, timeout=10)
-            response.raise_for_status()
-            st.session_state["selected"] = BriefId.model_validate(response.json()).id
+            st.session_state["selected"] = submit_brief(text)
         except API_ERRORS as exc:
             st.error(str(exc))
     st.divider()

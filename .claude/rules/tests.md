@@ -26,7 +26,8 @@ paths:
   2. Hallucination check: every output field must trace back to the brief or
      a tool result.
   3. LLM judge, only for what code can't check (tone, reasoning quality).
-     Use a written rubric, a pinned model and temperature 0.
+     Use a written rubric and a pinned model. The API no longer accepts
+     `temperature`, so verdicts can vary slightly between runs.
 - After any change to a prompt, agent or tool, run the evals and compare
   against the last saved baseline. Report the pass rate per tag and list
   any regressed case IDs.

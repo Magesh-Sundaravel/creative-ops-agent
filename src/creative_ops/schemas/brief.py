@@ -57,7 +57,10 @@ class StructuredBrief(BaseModel):
     key_message: OptionalStr = None
     usage_rights: OptionalStr = None
     deliverables: list[Deliverable] = []
-    mandatories: list[str] = []
+    mandatories: list[str] = Field(
+        [],
+        description="Each one in the Brief's own wording, with no trailing punctuation.",
+    )
     references: list[str] = []
     deadline: date | None = None
     budget: Budget | None = None

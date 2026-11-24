@@ -27,6 +27,9 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write # only to post the sticky review comment
     steps:
       - uses: actions/checkout@v4
         with:
@@ -52,17 +55,36 @@ jobs:
           jq '.structured_output' result.json > findings.json
       - name: Validate findings against schema
         run: uvx check-jsonschema==0.39.0 --schemafile .github/pr-review/schema.json findings.json
-      - name: Write job summary
+      - name: Render review
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           {
+            echo "<!-- pr-review-sticky -->"
             echo "## PR review"
+            echo
+            echo "Reviewed commit \`${HEAD_SHA::7}\`"
             echo
             if [ "$(jq '.findings | length' findings.json)" -eq 0 ]; then
               echo "No findings."
             else
               echo "| Severity | Location | Summary | Failure scenario |"
               echo "|---|---|---|---|"
-              jq -r 'def esc: gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;");
+              jq -r 'def esc: gsub("&"; "&amp;") | gsub("\\|"; "\\|") | gsub("\n"; " ") | gsub("`"; "'"'"'") | gsub("<"; "&lt;") | gsub("@"; "@\u200b") | gsub("\\["; "&#91;") | gsub("\\]"; "&#93;");
                 .findings[] | "| \(.severity) | `\(.file | esc):\(.line)` | \(.summary | esc) | \(.failure_scenario | esc) |"' findings.json
             fi
-          } >> "$GITHUB_STEP_SUMMARY"
+          } > review.md
+          cat review.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Post sticky comment
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          comments="repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments"
+          id=$(gh api --paginate "$comments" \
+            --jq '[.[] | select(.user.login == "github-actions[bot]" and (.body | contains("<!-- pr-review-sticky -->"))) | .id] | first // empty')
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$id" -F body=@review.md
+          else
+            gh api -X POST "$comments" -F body=@review.md
+          fi

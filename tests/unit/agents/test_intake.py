@@ -346,6 +346,7 @@ async def test_each_campaign_gets_its_own_structured_brief_and_missing_fields(
         "not a Brief",
         "one structured brief per campaign",
         "stated once for all campaigns",
+        "campaign name without the season",
     ],
 )
 async def test_system_prompt_states_the_extraction_rules(fake_client, make_message, rule):

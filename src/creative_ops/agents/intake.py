@@ -25,6 +25,8 @@ ambiguity quoting the Brief.
 - Never derive the deadline from deliverable due dates; leave it empty if the Brief gives \
 only per-deliverable dates.
 - If a deliverable's due date is after the deadline, add an ambiguity.
+- Record the campaign name without the season, brand or any other qualifier the Brief \
+puts beside it: "Resort Shirting (SS29)" is campaign name "Resort Shirting", season "SS29".
 - Copy a fact stated once for all campaigns (such as a shared deadline, brand or usage \
 rights) into each campaign's Structured Brief.
 - If the text is not a Brief, submit no Structured Briefs."""

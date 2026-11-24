@@ -72,8 +72,8 @@ uv run python evals/run_evals.py
 5. [x] Review + Handoff subagents, least-privilege tool sets
 6. [x] Coordinator: decomposition, parallel subagents, re-plan, escalation gates
 7. [x] Eval harness + first dataset (10–15 briefs)
-8. [ ] FastAPI + Streamlit (submit brief, view trace, approve escalations)  ← CURRENT
-9. [ ] CI: tests, Ruff, evals, `claude -p` review with structured output
+8. [x] FastAPI + Streamlit (submit brief, view trace, answer Escalations)
+9. [ ] CI: tests, Ruff, evals, `claude -p` review with structured output  ← CURRENT
 10. [ ] Observability, Docker, README with architecture + eval results
 
 Move the checkbox and CURRENT marker only when I confirm a step is done.

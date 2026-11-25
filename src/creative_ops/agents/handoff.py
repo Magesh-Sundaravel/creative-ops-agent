@@ -228,7 +228,7 @@ async def handoff(
         f"<structured_brief>\n{brief.model_dump_json(indent=2)}\n</structured_brief>\n"
         f"<handoff_facts>\n{facts.model_dump_json(indent=2)}\n</handoff_facts>"
     )
-    loop_result = await run(client, prompt, tools, system=SYSTEM_PROMPT)
+    loop_result = await run(client, prompt, tools, system=SYSTEM_PROMPT, agent="handoff")
     if not created or not submissions:
         raise HandoffIncomplete(loop_result)
     return HandoffPackage(

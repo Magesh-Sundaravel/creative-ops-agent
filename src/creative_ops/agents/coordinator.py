@@ -510,6 +510,7 @@ async def _coordinate(
         tools,
         system=SYSTEM_PROMPT,
         max_iterations=MAX_ITERATIONS,
+        agent="coordinator",
     )
     state = CoordinatorState(brief=brief, escalation=brief_escalation, campaigns=recorded)
     return CoordinatorResult(

@@ -365,3 +365,54 @@ def test_runs_and_resumes_carry_their_brief_id(fakes):
         _wait(client, first, "done")
 
     assert seen == [first, first]
+
+
+def _traced_app(coordinate, resume):
+    @asynccontextmanager
+    async def open_session():
+        yield "session"
+
+    return TestClient(create_app(coordinate, resume, open_session, "client"))
+
+
+def test_submit_brief_traced_opens_one_trace_with_the_brief_id(fake_langfuse, fakes):
+    with _traced_app(fakes.coordinate, fakes.resume) as client:
+        brief_id = client.post("/briefs", json={"text": "A brief"}).json()["id"]
+        _wait(client, brief_id, "done")
+
+    [root] = fake_langfuse.roots
+    assert root.name == "process-brief"
+    assert root.fields["trace_context"] == {"trace_id": brief_id}
+    assert root.fields["input"] == "A brief"
+    assert root.fields["output"] == "done"
+    assert "level" not in root.fields
+
+
+def test_resume_brief_traced_continues_the_same_trace(fake_langfuse, fakes):
+    with _traced_app(fakes.coordinate, fakes.resume) as client:
+        fakes.result = _result(escalated=True)
+        brief_id = client.post("/briefs", json={"text": "A brief"}).json()["id"]
+        _wait(client, brief_id, "escalated")
+        client.post(f"/briefs/{brief_id}/answers", json={"kind": "amend", "text": "More"})
+        _wait(client, brief_id, "done")
+
+    first, second = fake_langfuse.roots
+    assert first.fields["trace_context"] == second.fields["trace_context"] == {"trace_id": brief_id}
+
+
+def test_failed_brief_traced_records_the_trace_at_error_level(fake_langfuse, fakes):
+    fakes.error = RuntimeError("model down")
+    with _traced_app(fakes.coordinate, fakes.resume) as client:
+        brief_id = client.post("/briefs", json={"text": "A brief"}).json()["id"]
+        _wait(client, brief_id, "failed")
+
+    [root] = fake_langfuse.roots
+    assert root.fields["level"] == "ERROR"
+    assert "model down" in root.fields["status_message"]
+
+
+def test_api_shutdown_traced_flushes_the_client(fake_langfuse, fakes):
+    with _traced_app(fakes.coordinate, fakes.resume):
+        assert fake_langfuse.flushed == 0
+
+    assert fake_langfuse.flushed == 1

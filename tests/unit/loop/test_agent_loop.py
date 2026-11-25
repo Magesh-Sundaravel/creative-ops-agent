@@ -554,3 +554,21 @@ async def test_run_handler_exception_logs_traceback(fake_client, make_message, c
     assert "add" in record.getMessage()
     assert record.exc_info is not None
     assert str(record.exc_info[1]) == "disk on fire"
+
+
+async def test_run_logs_tokens_and_cost(fake_client, make_message, caplog):
+    client = fake_client(make_message("end_turn", input_tokens=1000, output_tokens=2000))
+
+    with caplog.at_level(logging.INFO, logger="creative_ops.loop.agent_loop"):
+        await run(client, "hi", [], model="claude-haiku-5-5")
+
+    assert "input_tokens=1000 output_tokens=2000 cost=$0.001100" in caplog.text
+
+
+async def test_run_logs_no_cost_for_unknown_model(fake_client, make_message, caplog):
+    client = fake_client(make_message("end_turn"))
+
+    with caplog.at_level(logging.INFO, logger="creative_ops.loop.agent_loop"):
+        await run(client, "hi", [], model=MODEL)
+
+    assert "input_tokens=10 output_tokens=5 cost=n/a" in caplog.text

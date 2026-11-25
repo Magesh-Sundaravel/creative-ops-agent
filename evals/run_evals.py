@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 from creative_ops.agents.coordinator import CoordinatorResult, coordinate
 from creative_ops.config import get_settings
+from creative_ops.logs import configure_logging
 from creative_ops.loop.agent_loop import TokenUsage
 from creative_ops.tools.mcp_adapter import open_client_stack
 from evals.cases import EvalCase, load_cases
@@ -197,6 +198,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     except ValueError as exc:
         parser.error(str(exc))
     settings = get_settings()
+    configure_logging(settings.log_level)
     client = AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
     report = asyncio.run(run_cases(cases, client, client))
     _print_report(report)

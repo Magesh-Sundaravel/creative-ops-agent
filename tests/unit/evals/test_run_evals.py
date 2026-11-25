@@ -133,14 +133,24 @@ async def test_run_cases_a_run_raising_several_errors_records_the_first(connect,
     assert report.cases[0].error == "ConnectionError: down"
 
 
-def run_main(monkeypatch, tmp_path, results: list[CaseResult], argv: Sequence[str] = ()) -> None:
+def run_main(
+    monkeypatch,
+    tmp_path,
+    results: list[CaseResult],
+    argv: Sequence[str] = (),
+    configured: list[str] | None = None,
+) -> None:
     """Drive `main` with `run_cases` returning a canned report; no API, results in `tmp_path`."""
+    configured = [] if configured is None else configured
 
     async def canned(cases, client, judge_client):
         return Report(cases=results, scores={}, field_scores={})
 
-    settings = SimpleNamespace(anthropic_api_key=SimpleNamespace(get_secret_value=lambda: "key"))
+    settings = SimpleNamespace(
+        anthropic_api_key=SimpleNamespace(get_secret_value=lambda: "key"), log_level="DEBUG"
+    )
     monkeypatch.setattr(run_evals, "get_settings", lambda: settings)
+    monkeypatch.setattr(run_evals, "configure_logging", configured.append)
     monkeypatch.setattr(run_evals, "load_cases", lambda: [])
     monkeypatch.setattr(run_evals, "run_cases", canned)
     monkeypatch.setattr(run_evals, "RESULTS_DIR", tmp_path)
@@ -204,3 +214,11 @@ def test_main_exits_0_when_all_cases_pass(monkeypatch, tmp_path):
     run_main(monkeypatch, tmp_path, [case_result(passed=True)])
 
     assert len(list(tmp_path.glob("*.json"))) == 1
+
+
+def test_main_applies_the_log_level_setting(monkeypatch, tmp_path):
+    configured: list[str] = []
+
+    run_main(monkeypatch, tmp_path, [case_result(passed=True)], configured=configured)
+
+    assert configured == ["DEBUG"]

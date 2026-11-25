@@ -14,6 +14,7 @@ from creative_ops.agents.coordinator import (
     Escalation,
 )
 from creative_ops.api.app import create_app
+from creative_ops.logs import current_brief_id
 
 
 def _result(escalated: bool = False) -> CoordinatorResult:
@@ -340,3 +341,27 @@ def test_error_is_cleared_when_the_next_answer_is_accepted(http, fakes):
 
     assert http.get(f"/briefs/{brief_id}").json()["error"] is None
     fakes.resume_gate.set()
+
+
+def test_runs_and_resumes_carry_their_brief_id(fakes):
+    seen: list[str] = []
+
+    async def coordinate(*args):
+        seen.append(current_brief_id.get())
+        return _result(escalated=True)
+
+    async def resume(*args):
+        seen.append(current_brief_id.get())
+        return _result()
+
+    @asynccontextmanager
+    async def open_session():
+        yield "session"
+
+    with TestClient(create_app(coordinate, resume, open_session, "client")) as client:
+        first = client.post("/briefs", json={"text": "A brief"}).json()["id"]
+        _wait(client, first, "escalated")
+        client.post(f"/briefs/{first}/answers", json={"kind": "amend", "text": "more"})
+        _wait(client, first, "done")
+
+    assert seen == [first, first]

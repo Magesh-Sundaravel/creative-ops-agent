@@ -3,6 +3,7 @@
 import asyncio
 import logging
 from collections.abc import Sequence
+from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
@@ -11,6 +12,7 @@ from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 from pydantic import BaseModel, ValidationError
 
 from creative_ops.config import get_settings
+from creative_ops.pricing import cost_usd
 from creative_ops.tools.tool import Tool, ToolResultError
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,17 @@ async def _call_tool(block: ToolUseBlock, tools_by_name: dict[str, Tool]) -> Too
     return {"type": "tool_result", "tool_use_id": block.id, "content": output}
 
 
+def _log_run(stop_reason: str | None, usage: TokenUsage, cost: Decimal | None) -> None:
+    """One line per Run: how it stopped, its tokens and its cost (n/a for an unpriced model)."""
+    logger.info(
+        "Run stopped (%s): input_tokens=%d output_tokens=%d cost=%s",
+        stop_reason,
+        usage.input_tokens,
+        usage.output_tokens,
+        "n/a" if cost is None else f"${cost:.6f}",
+    )
+
+
 async def run(
     client: AsyncAnthropic,
     prompt: str,
@@ -139,6 +152,7 @@ async def run(
         model = get_settings().model_fast
     messages: list[MessageParam] = [{"role": "user", "content": prompt}]
     usage = TokenUsage(input_tokens=0, output_tokens=0)
+    cost: Decimal | None = Decimal(0)
     for iteration in range(1, max_iterations + 1):
         response = await client.messages.create(
             model=model,
@@ -152,9 +166,12 @@ async def run(
             input_tokens=usage.input_tokens + response.usage.input_tokens,
             output_tokens=usage.output_tokens + response.usage.output_tokens,
         )
+        call_cost = cost_usd(model, response.usage.input_tokens, response.usage.output_tokens)
+        cost = None if cost is None or call_cost is None else cost + call_cost
         if response.stop_reason != "tool_use":
             break
         if iteration == max_iterations:
+            _log_run(response.stop_reason, usage, cost)
             raise MaxIterationsExceeded(max_iterations, messages, usage)
         results: list[ToolResultBlockParam] = await asyncio.gather(
             *(
@@ -164,8 +181,10 @@ async def run(
             )
         )
         if not results:
+            _log_run(response.stop_reason, usage, cost)
             raise UnexpectedStopReason(response.stop_reason, messages, usage)
         messages.append({"role": "user", "content": results})
+    _log_run(response.stop_reason, usage, cost)
     if response.stop_reason not in _OUTCOMES:
         raise UnexpectedStopReason(response.stop_reason, messages, usage)
     text = "".join(block.text for block in response.content if block.type == "text")

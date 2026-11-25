@@ -36,10 +36,11 @@ _OUTCOMES: dict[str, StopOutcome] = {
 
 
 class TokenUsage(BaseModel):
-    """Tokens consumed by a Run."""
+    """Tokens consumed by a Run, and what they cost (None if any call was on an unpriced model)."""
 
     input_tokens: int
     output_tokens: int
+    cost_usd: Decimal | None = Decimal(0)
 
 
 class UnexpectedStopReason(RuntimeError):
@@ -130,14 +131,14 @@ async def _traced_call(
         return result
 
 
-def _log_run(stop_reason: str | None, usage: TokenUsage, cost: Decimal | None) -> None:
+def _log_run(stop_reason: str | None, usage: TokenUsage) -> None:
     """One line per Run: how it stopped, its tokens and its cost (n/a for an unpriced model)."""
     logger.info(
         "Run stopped (%s): input_tokens=%d output_tokens=%d cost=%s",
         stop_reason,
         usage.input_tokens,
         usage.output_tokens,
-        "n/a" if cost is None else f"${cost:.6f}",
+        "n/a" if usage.cost_usd is None else f"${usage.cost_usd:.6f}",
     )
 
 
@@ -169,7 +170,6 @@ async def run(
     with tracing.run_span(agent, prompt, system, model) as run_span:
         messages: list[MessageParam] = [{"role": "user", "content": prompt}]
         usage = TokenUsage(input_tokens=0, output_tokens=0)
-        cost: Decimal | None = Decimal(0)
         for iteration in range(1, max_iterations + 1):
             with tracing.iteration_span(model, list(messages), system, iteration) as generation:
                 response = await client.messages.create(
@@ -200,12 +200,14 @@ async def run(
             usage = TokenUsage(
                 input_tokens=usage.input_tokens + response.usage.input_tokens,
                 output_tokens=usage.output_tokens + response.usage.output_tokens,
+                cost_usd=None
+                if usage.cost_usd is None or call_cost is None
+                else usage.cost_usd + call_cost,
             )
-            cost = None if cost is None or call_cost is None else cost + call_cost
             if response.stop_reason != "tool_use":
                 break
             if iteration == max_iterations:
-                _log_run(response.stop_reason, usage, cost)
+                _log_run(response.stop_reason, usage)
                 raise MaxIterationsExceeded(max_iterations, messages, usage)
             results: list[ToolResultBlockParam] = await asyncio.gather(
                 *(
@@ -215,10 +217,10 @@ async def run(
                 )
             )
             if not results:
-                _log_run(response.stop_reason, usage, cost)
+                _log_run(response.stop_reason, usage)
                 raise UnexpectedStopReason(response.stop_reason, messages, usage)
             messages.append({"role": "user", "content": results})
-        _log_run(response.stop_reason, usage, cost)
+        _log_run(response.stop_reason, usage)
         if response.stop_reason not in _OUTCOMES:
             raise UnexpectedStopReason(response.stop_reason, messages, usage)
         text = "".join(block.text for block in response.content if block.type == "text")
@@ -230,7 +232,7 @@ async def run(
                 "outcome": outcome,
                 "input_tokens": usage.input_tokens,
                 "output_tokens": usage.output_tokens,
-                "cost_usd": None if cost is None else float(cost),
+                "cost_usd": None if usage.cost_usd is None else float(usage.cost_usd),
             },
         )
         return LoopResult(text=text, outcome=outcome, messages=messages, usage=usage)

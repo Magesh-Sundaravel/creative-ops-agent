@@ -1,4 +1,6 @@
 from collections.abc import Callable, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 import pytest
 from anthropic.types import Message
@@ -101,3 +103,55 @@ def connect() -> Callable[[], Client]:
     from the fixture, because anyio requires the session to close in the task that opened it.
     """
     return lambda: Client(build_server())
+
+
+@pytest.fixture(autouse=True)
+def tracing_off(monkeypatch):
+    """No test sends traces, even with Langfuse keys in the developer's `.env`."""
+    monkeypatch.setattr("creative_ops.tracing._get_client", lambda: None)
+
+
+class FakeObservation:
+    """One recorded observation: the fields it was opened with, updated, and its children."""
+
+    def __init__(self, fields: dict) -> None:
+        self.fields = dict(fields)
+        self.children: list[FakeObservation] = []
+
+    def update(self, **fields) -> None:
+        self.fields.update(fields)
+
+    @property
+    def name(self) -> str:
+        return self.fields["name"]
+
+
+class FakeLangfuse:
+    """Stands in for the Langfuse client: records the tree of observations, nested by context."""
+
+    def __init__(self) -> None:
+        self.roots: list[FakeObservation] = []
+        self.flushed = 0
+        self._current: ContextVar[FakeObservation | None] = ContextVar("current", default=None)
+
+    @contextmanager
+    def start_as_current_observation(self, **fields):
+        observation = FakeObservation(fields)
+        parent = self._current.get()
+        (parent.children if parent else self.roots).append(observation)
+        token = self._current.set(observation)
+        try:
+            yield observation
+        finally:
+            self._current.reset(token)
+
+    def flush(self) -> None:
+        self.flushed += 1
+
+
+@pytest.fixture
+def fake_langfuse(monkeypatch) -> FakeLangfuse:
+    """Turn tracing on, recording into a fake client."""
+    fake = FakeLangfuse()
+    monkeypatch.setattr("creative_ops.tracing._get_client", lambda: fake)
+    return fake

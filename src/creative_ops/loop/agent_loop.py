@@ -11,6 +11,7 @@ from anthropic import AsyncAnthropic, omit
 from anthropic.types import MessageParam, ToolResultBlockParam, ToolUseBlock
 from pydantic import BaseModel, ValidationError
 
+from creative_ops import tracing
 from creative_ops.config import get_settings
 from creative_ops.pricing import cost_usd
 from creative_ops.tools.tool import Tool, ToolResultError
@@ -136,10 +137,12 @@ async def run(
     model: str | None = None,
     max_tokens: int = 4096,
     max_iterations: int = 5,
+    agent: str = "agent",
 ) -> LoopResult:
     """Drive a Run from a single prompt until the model stops.
 
     `model` defaults to the configured fast model, resolved here rather than at import.
+    `agent` names the Run's span in the Trace.
     """
     if max_iterations < 1:
         raise ValueError(f"max_iterations must be at least 1, got {max_iterations}")
@@ -150,44 +153,70 @@ async def run(
         raise ValueError(f"Duplicate tool names: {duplicates}")
     if model is None:
         model = get_settings().model_fast
-    messages: list[MessageParam] = [{"role": "user", "content": prompt}]
-    usage = TokenUsage(input_tokens=0, output_tokens=0)
-    cost: Decimal | None = Decimal(0)
-    for iteration in range(1, max_iterations + 1):
-        response = await client.messages.create(
-            model=model,
-            max_tokens=max_tokens,
-            system=system if system is not None else omit,
-            messages=list(messages),
-            tools=[tool.to_param() for tool in tools] if tools else omit,
-        )
-        messages.append({"role": "assistant", "content": response.content})
-        usage = TokenUsage(
-            input_tokens=usage.input_tokens + response.usage.input_tokens,
-            output_tokens=usage.output_tokens + response.usage.output_tokens,
-        )
-        call_cost = cost_usd(model, response.usage.input_tokens, response.usage.output_tokens)
-        cost = None if cost is None or call_cost is None else cost + call_cost
-        if response.stop_reason != "tool_use":
-            break
-        if iteration == max_iterations:
-            _log_run(response.stop_reason, usage, cost)
-            raise MaxIterationsExceeded(max_iterations, messages, usage)
-        results: list[ToolResultBlockParam] = await asyncio.gather(
-            *(
-                _call_tool(block, tools_by_name)
-                for block in response.content
-                if block.type == "tool_use"
+    with tracing.run_span(agent, prompt, system, model) as run_span:
+        messages: list[MessageParam] = [{"role": "user", "content": prompt}]
+        usage = TokenUsage(input_tokens=0, output_tokens=0)
+        cost: Decimal | None = Decimal(0)
+        for iteration in range(1, max_iterations + 1):
+            with tracing.iteration_span(model, list(messages), system, iteration) as generation:
+                response = await client.messages.create(
+                    model=model,
+                    max_tokens=max_tokens,
+                    system=system if system is not None else omit,
+                    messages=list(messages),
+                    tools=[tool.to_param() for tool in tools] if tools else omit,
+                )
+                call_cost = cost_usd(
+                    model, response.usage.input_tokens, response.usage.output_tokens
+                )
+                generation.update(
+                    output=tracing.assistant_message(response.content),
+                    usage_details={
+                        "input": response.usage.input_tokens,
+                        "output": response.usage.output_tokens,
+                    },
+                    cost_details=None if call_cost is None else {"total": float(call_cost)},
+                    metadata={
+                        "iteration": iteration,
+                        "stop_reason": response.stop_reason,
+                        "thinking": tracing.thinking(response.content) or None,
+                    },
+                )
+            messages.append({"role": "assistant", "content": response.content})
+            usage = TokenUsage(
+                input_tokens=usage.input_tokens + response.usage.input_tokens,
+                output_tokens=usage.output_tokens + response.usage.output_tokens,
             )
-        )
-        if not results:
-            _log_run(response.stop_reason, usage, cost)
+            cost = None if cost is None or call_cost is None else cost + call_cost
+            if response.stop_reason != "tool_use":
+                break
+            if iteration == max_iterations:
+                _log_run(response.stop_reason, usage, cost)
+                raise MaxIterationsExceeded(max_iterations, messages, usage)
+            results: list[ToolResultBlockParam] = await asyncio.gather(
+                *(
+                    _call_tool(block, tools_by_name)
+                    for block in response.content
+                    if block.type == "tool_use"
+                )
+            )
+            if not results:
+                _log_run(response.stop_reason, usage, cost)
+                raise UnexpectedStopReason(response.stop_reason, messages, usage)
+            messages.append({"role": "user", "content": results})
+        _log_run(response.stop_reason, usage, cost)
+        if response.stop_reason not in _OUTCOMES:
             raise UnexpectedStopReason(response.stop_reason, messages, usage)
-        messages.append({"role": "user", "content": results})
-    _log_run(response.stop_reason, usage, cost)
-    if response.stop_reason not in _OUTCOMES:
-        raise UnexpectedStopReason(response.stop_reason, messages, usage)
-    text = "".join(block.text for block in response.content if block.type == "text")
-    return LoopResult(
-        text=text, outcome=_OUTCOMES[response.stop_reason], messages=messages, usage=usage
-    )
+        text = "".join(block.text for block in response.content if block.type == "text")
+        outcome = _OUTCOMES[response.stop_reason]
+        run_span.update(
+            output=text,
+            metadata={
+                "agent": agent,
+                "outcome": outcome,
+                "input_tokens": usage.input_tokens,
+                "output_tokens": usage.output_tokens,
+                "cost_usd": None if cost is None else float(cost),
+            },
+        )
+        return LoopResult(text=text, outcome=outcome, messages=messages, usage=usage)

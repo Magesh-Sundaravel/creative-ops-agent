@@ -228,7 +228,11 @@ async def review(
         "</check_findings>"
     )
     loop_result = await run(
-        client, prompt, [tool], system=SYSTEM_PROMPT.format(today=today.isoformat())
+        client,
+        prompt,
+        [tool],
+        system=SYSTEM_PROMPT.format(today=today.isoformat()),
+        agent="review",
     )
     if not submissions:
         raise NoValidReview(loop_result)

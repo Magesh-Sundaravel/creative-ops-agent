@@ -104,7 +104,7 @@ async def intake(client: AsyncAnthropic, brief: str, today: date | None = None) 
         handler=handler,
     )
     loop_result = await run(
-        client, brief, [tool], system=SYSTEM_PROMPT.format(today=today.isoformat())
+        client, brief, [tool], system=SYSTEM_PROMPT.format(today=today.isoformat()), agent="intake"
     )
     if not submissions:
         raise NoValidSubmission(loop_result)

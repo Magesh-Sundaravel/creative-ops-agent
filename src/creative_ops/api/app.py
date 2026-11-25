@@ -11,6 +11,7 @@ from uuid import uuid4
 from anthropic import AsyncAnthropic
 from fastapi import Body, FastAPI, HTTPException
 
+from creative_ops import tracing
 from creative_ops.agents.coordinator import (
     Acknowledge,
     Amend,
@@ -48,18 +49,22 @@ def create_app(
     async def run(record: BriefRecord, start: Callable[[], Awaitable[CoordinatorResult]]) -> None:
         """Await a Coordinator Run on a Brief, then record its result or its failure."""
         current_brief_id.set(record.id)  # this task's own context, so it never leaks to other Runs
-        try:
-            result = await start()
-        except Exception as exc:
-            logger.exception("Run failed for Brief %s", record.id)
-            record.error = f"{type(exc).__name__}: {exc}"
-            # A failed resume leaves the Escalation open to answer again.
-            record.status = "failed" if record.state is None else "escalated"
-            return
-        record.error = None
-        record.results.append(result)
-        record.state = result.state
-        record.status = "escalated" if result.state else "done"
+        with tracing.trace_brief(record.id, record.brief) as trace:
+            try:
+                result = await start()
+            except Exception as exc:
+                logger.exception("Run failed for Brief %s", record.id)
+                record.error = f"{type(exc).__name__}: {exc}"
+                # A failed resume leaves the Escalation open to answer again.
+                record.status = "failed" if record.state is None else "escalated"
+                trace.update(output=record.error, level="ERROR", status_message=record.error)
+                return
+            record.error = None
+            record.results.append(result)
+            record.state = result.state
+            record.status = "escalated" if result.state else "done"
+            final = result.loop_result.text if result.loop_result else None
+            trace.update(output=final or record.status)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -73,6 +78,7 @@ def create_app(
                 for task in runs:
                     task.cancel()
                 await asyncio.gather(*runs, return_exceptions=True)
+                tracing.flush()
 
     app = FastAPI(lifespan=lifespan)
 

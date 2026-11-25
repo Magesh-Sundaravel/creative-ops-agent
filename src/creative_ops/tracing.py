@@ -7,7 +7,7 @@ so tracing can never fail a Run.
 import json
 import logging
 from collections.abc import Iterator
-from contextlib import ExitStack, contextmanager
+from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Any
 
 from langfuse import Langfuse
@@ -66,6 +66,17 @@ class Span:
             self._observation.update(**fields)
         except Exception:
             logger.warning("Could not update a Langfuse observation", exc_info=True)
+
+    @property
+    def context(self) -> dict[str, str] | None:
+        """Where to nest a child under this observation after it has closed, or None."""
+        if self._observation is None:
+            return None
+        try:
+            return {"trace_id": self._observation.trace_id, "parent_span_id": self._observation.id}
+        except Exception:
+            logger.warning("Could not read a Langfuse observation's id", exc_info=True)
+            return None
 
 
 @contextmanager
@@ -175,6 +186,20 @@ def iteration_span(model: str, messages: list[Any], system: str | None, number: 
         input=_with_system(system, chat(messages)),
         metadata={"iteration": number},
     )
+
+
+def tool_span(
+    name: str, tool_input: Any, parent: dict[str, str] | None
+) -> AbstractContextManager[Span]:
+    """One tool call, nested under the Iteration `parent` that requested it.
+
+    The Iteration's own span is closed by the time its tools run, and concurrent calls
+    share one context, so the parent is passed explicitly.
+    """
+    fields: dict[str, Any] = {"as_type": "tool", "name": name, "input": tool_input}
+    if parent is not None:
+        fields["trace_context"] = parent
+    return _observe(**fields)
 
 
 def flush() -> None:

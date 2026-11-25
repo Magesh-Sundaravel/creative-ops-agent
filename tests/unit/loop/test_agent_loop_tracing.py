@@ -4,7 +4,8 @@ import pytest
 from pydantic import BaseModel
 
 from creative_ops.loop.agent_loop import MaxIterationsExceeded, run
-from creative_ops.tools.tool import Tool
+from creative_ops.schemas.client_stack import permission_denied
+from creative_ops.tools.tool import Tool, ToolResultError
 
 MODEL = "claude-haiku-5-5"  # the one model with a price entry
 
@@ -106,10 +107,92 @@ async def test_parallel_subagent_runs_nest_under_the_run_that_dispatched_them(
 
     [root] = fake_langfuse.roots
     assert root.name == "coordinator-run"
-    reviews = [c for c in root.children if c.name == "review-run"]
+    reviews = [r for tool in root.children[0].children for r in tool.children]
     assert len(reviews) == 2
     assert all([g.name for g in r.children] == ["call-model"] for r in reviews)
     assert {r.fields["output"] for r in reviews} == {"a", "b"}
+
+
+async def test_tool_calls_are_spans_under_the_iteration_that_requested_them(
+    fake_langfuse, fake_client, make_message
+):
+    async def slow(_: Empty) -> str:
+        await asyncio.sleep(0)
+        return "ok"
+
+    client = fake_client(
+        make_message(
+            "tool_use",
+            tool_uses=[{"id": f"t{i}", "name": "noop", "input": {}} for i in (1, 2)],
+        ),
+        make_message("end_turn", text="Done"),
+    )
+
+    await run(client, "Go", [noop_tool(slow)], model=MODEL)
+
+    first, second = fake_langfuse.roots[0].children
+    assert first.children and not second.children
+    assert [t.name for t in first.children] == ["noop", "noop"]
+    tool = first.children[0]
+    assert tool.fields["as_type"] == "tool"
+    assert tool.fields["input"] == {}
+    assert tool.fields["output"] == "ok"
+    assert tool.fields["metadata"] == {"is_error": False}
+
+
+async def test_a_refused_tool_call_is_an_error_span_showing_permission_denied(
+    fake_langfuse, fake_client, make_message
+):
+    async def refuse(_: Empty) -> str:
+        raise ToolResultError(permission_denied("Not allowed."))
+
+    client = fake_client(
+        make_message("tool_use", tool_uses=[{"id": "t1", "name": "noop", "input": {}}]),
+        make_message("end_turn", text="Done"),
+    )
+
+    await run(client, "Go", [noop_tool(refuse)], model=MODEL)
+
+    [tool] = fake_langfuse.roots[0].children[0].children
+    assert tool.fields["metadata"] == {"is_error": True}
+    assert tool.fields["level"] == "ERROR"
+    assert "permission_denied" in tool.fields["output"]
+
+
+async def test_subagent_runs_stay_under_their_own_tool_span(
+    fake_langfuse, routing_client, make_message
+):
+    async def dispatch(_: Empty) -> str:
+        await asyncio.sleep(0)
+        await run(client, "sub", [noop_tool()], model=MODEL, system="sub", agent="review")
+        return "ok"
+
+    sub_tool = make_message("tool_use", tool_uses=[{"id": "s1", "name": "noop", "input": {}}])
+    client = routing_client(
+        {
+            "main": [
+                make_message(
+                    "tool_use",
+                    tool_uses=[{"id": f"t{i}", "name": "noop", "input": {}} for i in (1, 2)],
+                ),
+                make_message("end_turn", text="Done"),
+            ],
+            "sub": [
+                sub_tool,
+                make_message("end_turn", text="a"),
+                sub_tool,
+                make_message("end_turn", text="b"),
+            ],
+        }
+    )
+
+    await run(client, "Go", [noop_tool(dispatch)], model=MODEL, system="main", agent="coordinator")
+
+    iteration = fake_langfuse.roots[0].children[0]
+    assert len(iteration.children) == 2
+    for tool in iteration.children:
+        [review] = tool.children
+        assert review.name == "review-run"
 
 
 class BrokenLangfuse:
@@ -145,3 +228,19 @@ async def test_a_failing_recorder_does_not_fail_the_run(
     result = await run(fake_client(make_message("end_turn", text="Hi")), "Go", [], model=MODEL)
 
     assert result.text == "Hi"
+
+
+@pytest.mark.parametrize("fail_on", ["open", "update"])
+async def test_a_failing_recorder_does_not_fail_a_tool_call(
+    monkeypatch, fake_client, make_message, fail_on
+):
+    monkeypatch.setattr("creative_ops.tracing._get_client", lambda: BrokenLangfuse(fail_on))
+    client = fake_client(
+        make_message("tool_use", tool_uses=[{"id": "t1", "name": "noop", "input": {}}]),
+        make_message("end_turn", text="Done"),
+    )
+
+    result = await run(client, "Go", [noop_tool()], model=MODEL)
+
+    assert result.text == "Done"
+    assert result.messages[2]["content"][0]["content"] == "ok"

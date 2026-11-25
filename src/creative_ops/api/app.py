@@ -27,6 +27,7 @@ from creative_ops.api.models import (
     BriefSummary,
     SubmitBrief,
 )
+from creative_ops.logs import current_brief_id
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ def create_app(
 
     async def run(record: BriefRecord, start: Callable[[], Awaitable[CoordinatorResult]]) -> None:
         """Await a Coordinator Run on a Brief, then record its result or its failure."""
+        current_brief_id.set(record.id)  # this task's own context, so it never leaks to other Runs
         try:
             result = await start()
         except Exception as exc:

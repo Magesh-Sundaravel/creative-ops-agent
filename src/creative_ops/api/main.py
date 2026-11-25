@@ -5,7 +5,10 @@ from anthropic import AsyncAnthropic
 from creative_ops.agents.coordinator import coordinate, resume
 from creative_ops.api.app import create_app
 from creative_ops.config import get_settings
+from creative_ops.logs import configure_logging
 from creative_ops.tools.mcp_adapter import open_client_stack
+
+configure_logging(get_settings().log_level)
 
 app = create_app(
     coordinate,

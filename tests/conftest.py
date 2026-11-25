@@ -164,3 +164,17 @@ def fake_langfuse(monkeypatch) -> FakeLangfuse:
     fake = FakeLangfuse()
     monkeypatch.setattr("creative_ops.tracing._get_client", lambda: fake)
     return fake
+
+
+@pytest.fixture
+def tags(monkeypatch) -> list[list[str]]:
+    """The tags each trace was given through `propagate_attributes`, in order."""
+    given: list[list[str]] = []
+
+    @contextmanager
+    def propagate_attributes(*, tags, **_):
+        given.append(tags)
+        yield
+
+    monkeypatch.setattr("creative_ops.tracing.propagate_attributes", propagate_attributes)
+    return given

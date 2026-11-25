@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from typing import Any
 
-from langfuse import Langfuse
+from langfuse import Langfuse, propagate_attributes
 from langfuse.span_filter import is_default_export_span
 
 from creative_ops.config import get_settings
@@ -165,6 +165,22 @@ def trace_brief(brief_id: str, brief: str):
     return _observe(
         as_type="span", name="process-brief", trace_context={"trace_id": brief_id}, input=brief
     )
+
+
+@contextmanager
+def trace_case(case_id: str, brief: str) -> Iterator[Span]:
+    """The root of an Eval Case's Trace: named by the case id and tagged `eval`.
+
+    Langfuse trace ids must be 32 hex characters, so the id itself is Langfuse's own.
+    """
+    with _observe(as_type="span", name=case_id, input=brief, metadata={"case_id": case_id}) as span:
+        with ExitStack() as stack:
+            if span.context is not None:
+                try:
+                    stack.enter_context(propagate_attributes(tags=["eval"], trace_name=case_id))
+                except Exception:
+                    logger.warning("Could not tag a Langfuse trace", exc_info=True)
+            yield span
 
 
 def run_span(agent: str, prompt: str, system: str | None, model: str):

@@ -88,7 +88,7 @@ async def test_run_unrecognised_stop_reason_error_carries_trace(fake_client, mak
         {"role": "user", "content": "Go"},
         {"role": "assistant", "content": reply.content},
     ]
-    assert error.usage == TokenUsage(input_tokens=12, output_tokens=7)
+    assert error.usage == TokenUsage(input_tokens=12, output_tokens=7, cost_usd=None)
 
 
 async def test_run_with_system_sends_system_prompt(fake_client, make_message):
@@ -124,7 +124,7 @@ async def test_run_completed_returns_token_usage(fake_client, make_message):
 
     result = await run(client, "Go", [], model=MODEL)
 
-    assert result.usage == TokenUsage(input_tokens=12, output_tokens=7)
+    assert result.usage == TokenUsage(input_tokens=12, output_tokens=7, cost_usd=None)
 
 
 async def test_run_without_model_uses_configured_fast_model(fake_client, make_message, monkeypatch):
@@ -237,7 +237,7 @@ async def test_run_token_usage_is_summed_across_iterations(fake_client, make_mes
 
     result = await run(client, "What is 2 + 3?", [make_add_tool()], model=MODEL)
 
-    assert result.usage == TokenUsage(input_tokens=230, output_tokens=28)
+    assert result.usage == TokenUsage(input_tokens=230, output_tokens=28, cost_usd=None)
 
 
 async def test_run_unrecognised_stop_reason_after_tool_carries_summed_usage(
@@ -251,7 +251,7 @@ async def test_run_unrecognised_stop_reason_after_tool_carries_summed_usage(
     with pytest.raises(UnexpectedStopReason) as exc_info:
         await run(client, "What is 2 + 3?", [make_add_tool()], model=MODEL)
 
-    assert exc_info.value.usage == TokenUsage(input_tokens=230, output_tokens=28)
+    assert exc_info.value.usage == TokenUsage(input_tokens=230, output_tokens=28, cost_usd=None)
     assert len(exc_info.value.messages) == 4
 
 
@@ -295,7 +295,7 @@ async def test_run_max_iterations_error_carries_trace(fake_client, make_message)
         },
         {"role": "assistant", "content": second.content},
     ]
-    assert error.usage == TokenUsage(input_tokens=230, output_tokens=28)
+    assert error.usage == TokenUsage(input_tokens=230, output_tokens=28, cost_usd=None)
 
 
 @pytest.mark.parametrize("max_iterations", [0, -1])

@@ -10,8 +10,10 @@ import argparse
 import asyncio
 import logging
 import sys
+import time
 from collections.abc import Awaitable, Callable, Sequence
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 
 # Run as a script, only `evals/` is on the path: add the repo root so `evals` imports.
@@ -21,9 +23,10 @@ from anthropic import AsyncAnthropic
 from mcp import Client
 from pydantic import BaseModel
 
+from creative_ops import tracing
 from creative_ops.agents.coordinator import CoordinatorResult, coordinate
 from creative_ops.config import get_settings
-from creative_ops.logs import configure_logging
+from creative_ops.logs import configure_logging, current_brief_id
 from creative_ops.loop.agent_loop import TokenUsage
 from creative_ops.tools.mcp_adapter import open_client_stack
 from evals.cases import EvalCase, load_cases
@@ -45,8 +48,10 @@ class CaseResult(BaseModel):
     passed: bool
     grades: list[Grade]
     usage: TokenUsage | None
-    """Tokens across the Coordinator and every subagent Run; None if the Run raised."""
+    """Tokens and cost across the Coordinator and every subagent Run; None if the Run raised."""
     error: str | None = None
+    latency_s: float = 0
+    """Seconds the case took, Run and grading."""
 
 
 class GraderScore(BaseModel):
@@ -56,12 +61,32 @@ class GraderScore(BaseModel):
     total: int
 
 
+class Totals(BaseModel):
+    """Tokens and cost summed over the cases that completed, and wall-clock time.
+
+    Cases that raised and Judge calls are not counted; cost is None if any is unknown.
+    """
+
+    input_tokens: int
+    output_tokens: int
+    cost_usd: Decimal | None
+    latency_s: float
+
+
 class Report(BaseModel):
-    """Every case's result and the scores pooled per Grader and per field."""
+    """Every case's result, their totals, and the scores pooled per Grader and per field."""
 
     cases: list[CaseResult]
+    totals: Totals
     scores: dict[str, GraderScore]
     field_scores: dict[str, GraderScore]
+
+
+def _total_cost(usages: Sequence[TokenUsage]) -> Decimal | None:
+    """The summed cost, or None if any is unknown."""
+    if any(u.cost_usd is None for u in usages):
+        return None
+    return sum((u.cost_usd for u in usages), Decimal(0))
 
 
 def _usage(result: CoordinatorResult) -> TokenUsage:
@@ -74,6 +99,7 @@ def _usage(result: CoordinatorResult) -> TokenUsage:
     return TokenUsage(
         input_tokens=sum(u.input_tokens for u in usages),
         output_tokens=sum(u.output_tokens for u in usages),
+        cost_usd=_total_cost(usages),
     )
 
 
@@ -85,15 +111,32 @@ async def _run_case(
     open_session: Callable[[], Client],
 ) -> CaseResult:
     """Run one case on its own client-stack session and grade it; a raise fails the case."""
-    try:
-        async with open_session() as session:
-            result = await coordinate(client, session, case.brief, case.today)
-        grades = await grade_case(case, result, judge_client)
-    except Exception as exc:  # boundary: one bad case must not end the eval
-        logger.exception("Eval Case %r raised", case.id)
-        return CaseResult(case_id=case.id, passed=False, grades=[], usage=None, error=_error(exc))
+    current_brief_id.set(case.id)  # this task's own context, so it never leaks to other cases
+    start = time.monotonic()
+    with tracing.trace_case(case.id, case.brief) as trace:
+        try:
+            async with open_session() as session:
+                result = await coordinate(client, session, case.brief, case.today)
+            grades = await grade_case(case, result, judge_client)
+        except Exception as exc:  # boundary: one bad case must not end the eval
+            logger.exception("Eval Case %r raised", case.id)
+            error = _error(exc)
+            trace.update(output=error, level="ERROR", status_message=error)
+            return CaseResult(
+                case_id=case.id,
+                passed=False,
+                grades=[],
+                usage=None,
+                error=error,
+                latency_s=time.monotonic() - start,
+            )
+        trace.update(output="passed" if grades.passed else "failed")
     return CaseResult(
-        case_id=case.id, passed=grades.passed, grades=grades.grades, usage=_usage(result)
+        case_id=case.id,
+        passed=grades.passed,
+        grades=grades.grades,
+        usage=_usage(result),
+        latency_s=time.monotonic() - start,
     )
 
 
@@ -122,7 +165,15 @@ async def run_cases(
         async with limit:
             return await _run_case(case, client, judge_client, coordinate, open_session)
 
+    start = time.monotonic()
     results = await asyncio.gather(*(bounded(c) for c in cases))
+    usages = [r.usage for r in results if r.usage is not None]
+    totals = Totals(
+        input_tokens=sum(u.input_tokens for u in usages),
+        output_tokens=sum(u.output_tokens for u in usages),
+        cost_usd=_total_cost(usages),
+        latency_s=time.monotonic() - start,
+    )
     scores: dict[str, GraderScore] = {}
     field_scores: dict[str, GraderScore] = {}
     for grade in (g for r in results for g in r.grades):
@@ -130,7 +181,7 @@ async def run_cases(
             score = pooled.setdefault(key, GraderScore(passed=0, total=0))
             score.passed += grade.passed
             score.total += 1
-    return Report(cases=list(results), scores=scores, field_scores=field_scores)
+    return Report(cases=list(results), totals=totals, scores=scores, field_scores=field_scores)
 
 
 def select_cases(cases: list[EvalCase], case_id: str | None) -> list[EvalCase]:
@@ -154,6 +205,9 @@ def _print_report(report: Report) -> None:
             print(f"      {g.grader} {where}{g.field}: {g.reason}")
     passed = sum(c.passed for c in report.cases)
     print(f"\nCases: {passed}/{len(report.cases)} passed")
+    t = report.totals
+    cost = "n/a" if t.cost_usd is None else f"${t.cost_usd:.4f}"
+    print(f"Tokens: {t.input_tokens} in, {t.output_tokens} out; cost {cost}; {t.latency_s:.1f}s")
     for grader, score in report.scores.items():
         print(f"{grader}: {score.passed}/{score.total}")
     print()
@@ -201,6 +255,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     configure_logging(settings.log_level)
     client = AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
     report = asyncio.run(run_cases(cases, client, client))
+    tracing.flush()
     _print_report(report)
     RESULTS_DIR.mkdir(exist_ok=True)
     path = RESULTS_DIR / f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}.json"

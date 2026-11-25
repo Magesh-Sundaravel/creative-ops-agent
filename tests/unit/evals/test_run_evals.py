@@ -5,10 +5,13 @@ from types import SimpleNamespace
 import pytest
 
 from creative_ops.agents.coordinator import CoordinatorResult, Escalation
+from creative_ops.logs import current_brief_id
 from creative_ops.loop.agent_loop import LoopResult, StopOutcome, TokenUsage
 from evals import run_evals
 from evals.cases import EvalCase
-from evals.run_evals import CaseResult, Report, run_cases, select_cases
+from evals.run_evals import CaseResult, Report, Totals, run_cases, select_cases
+
+totals = Totals(input_tokens=0, output_tokens=0, cost_usd=None, latency_s=0)
 
 
 def eval_case(case_id: str, escalation: str | None) -> EvalCase:
@@ -144,7 +147,7 @@ def run_main(
     configured = [] if configured is None else configured
 
     async def canned(cases, client, judge_client):
-        return Report(cases=results, scores={}, field_scores={})
+        return Report(cases=results, totals=totals, scores={}, field_scores={})
 
     settings = SimpleNamespace(
         anthropic_api_key=SimpleNamespace(get_secret_value=lambda: "key"), log_level="DEBUG"
@@ -222,3 +225,78 @@ def test_main_applies_the_log_level_setting(monkeypatch, tmp_path):
     run_main(monkeypatch, tmp_path, [case_result(passed=True)], configured=configured)
 
     assert configured == ["DEBUG"]
+
+
+async def test_run_cases_records_cost_latency_per_case_and_in_total(connect, fake_client):
+    async def coordinate(client, session, brief, today):
+        result = not_a_brief()
+        result.loop_result.usage = TokenUsage(input_tokens=30, output_tokens=7, cost_usd="0.5")
+        return result
+
+    report = await run_cases(
+        [eval_case("a", "not_a_brief"), eval_case("b", "not_a_brief")],
+        fake_client(),
+        fake_client(),
+        coordinate=coordinate,
+        open_session=connect,
+    )
+
+    assert [str(c.usage.cost_usd) for c in report.cases] == ["0.5", "0.5"]
+    assert all(c.latency_s >= 0 for c in report.cases)
+    assert report.totals.input_tokens == 60
+    assert report.totals.output_tokens == 14
+    assert str(report.totals.cost_usd) == "1.0"
+    assert report.totals.latency_s >= 0
+
+
+async def test_run_cases_total_cost_is_unknown_when_a_case_has_no_cost(connect, fake_client):
+    async def coordinate(client, session, brief, today):
+        result = not_a_brief()
+        result.loop_result.usage = TokenUsage(input_tokens=1, output_tokens=1, cost_usd=None)
+        return result
+
+    report = await run_cases(
+        [eval_case("a", "not_a_brief")],
+        fake_client(),
+        fake_client(),
+        coordinate=coordinate,
+        open_session=connect,
+    )
+
+    assert report.totals.cost_usd is None
+
+
+async def test_run_cases_logs_carry_the_case_id(connect, fake_client, caplog):
+    seen = []
+
+    async def coordinate(client, session, brief, today):
+        seen.append(current_brief_id.get())
+        return not_a_brief()
+
+    await run_cases(
+        [eval_case("a", "not_a_brief"), eval_case("b", "not_a_brief")],
+        fake_client(),
+        fake_client(),
+        coordinate=coordinate,
+        open_session=connect,
+    )
+
+    assert sorted(seen) == ["a", "b"]
+    assert current_brief_id.get() == "-"
+
+
+async def test_run_cases_traces_each_case_tagged_eval(connect, fake_client, fake_langfuse, tags):
+    async def coordinate(client, session, brief, today):
+        return not_a_brief()
+
+    await run_cases(
+        [eval_case("a", "not_a_brief"), eval_case("b", "not_a_brief")],
+        fake_client(),
+        fake_client(),
+        coordinate=coordinate,
+        open_session=connect,
+    )
+
+    assert sorted(r.name for r in fake_langfuse.roots) == ["a", "b"]
+    assert tags == [["eval"], ["eval"]]
+    assert fake_langfuse.flushed == 0  # flushing is the script's job, once at the end

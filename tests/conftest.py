@@ -1,3 +1,4 @@
+import itertools
 from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -111,12 +112,17 @@ def tracing_off(monkeypatch):
     monkeypatch.setattr("creative_ops.tracing._get_client", lambda: None)
 
 
+_ids = itertools.count(1)
+
+
 class FakeObservation:
     """One recorded observation: the fields it was opened with, updated, and its children."""
 
     def __init__(self, fields: dict) -> None:
         self.fields = dict(fields)
         self.children: list[FakeObservation] = []
+        self.id = f"span{next(_ids)}"
+        self.trace_id = "trace"
 
     def update(self, **fields) -> None:
         self.fields.update(fields)
@@ -132,12 +138,15 @@ class FakeLangfuse:
     def __init__(self) -> None:
         self.roots: list[FakeObservation] = []
         self.flushed = 0
+        self._by_id: dict[str, FakeObservation] = {}
         self._current: ContextVar[FakeObservation | None] = ContextVar("current", default=None)
 
     @contextmanager
     def start_as_current_observation(self, **fields):
         observation = FakeObservation(fields)
-        parent = self._current.get()
+        parent_id = (fields.get("trace_context") or {}).get("parent_span_id")
+        parent = self._by_id[parent_id] if parent_id else self._current.get()
+        self._by_id[observation.id] = observation
         (parent.children if parent else self.roots).append(observation)
         token = self._current.set(observation)
         try:

@@ -117,6 +117,19 @@ async def _call_tool(block: ToolUseBlock, tools_by_name: dict[str, Tool]) -> Too
     return {"type": "tool_result", "tool_use_id": block.id, "content": output}
 
 
+async def _traced_call(
+    block: ToolUseBlock, tools_by_name: dict[str, Tool], parent: dict[str, str] | None
+) -> ToolResultBlockParam:
+    """Run one tool call inside its own span under the requesting Iteration."""
+    with tracing.tool_span(block.name, block.input, parent) as span:
+        result = await _call_tool(block, tools_by_name)
+        is_error = result.get("is_error", False)
+        span.update(output=result["content"], metadata={"is_error": is_error})
+        if is_error:
+            span.update(level="ERROR", status_message=result["content"])
+        return result
+
+
 def _log_run(stop_reason: str | None, usage: TokenUsage, cost: Decimal | None) -> None:
     """One line per Run: how it stopped, its tokens and its cost (n/a for an unpriced model)."""
     logger.info(
@@ -182,6 +195,7 @@ async def run(
                         "thinking": tracing.thinking(response.content) or None,
                     },
                 )
+            iteration_context = generation.context
             messages.append({"role": "assistant", "content": response.content})
             usage = TokenUsage(
                 input_tokens=usage.input_tokens + response.usage.input_tokens,
@@ -195,7 +209,7 @@ async def run(
                 raise MaxIterationsExceeded(max_iterations, messages, usage)
             results: list[ToolResultBlockParam] = await asyncio.gather(
                 *(
-                    _call_tool(block, tools_by_name)
+                    _traced_call(block, tools_by_name, iteration_context)
                     for block in response.content
                     if block.type == "tool_use"
                 )

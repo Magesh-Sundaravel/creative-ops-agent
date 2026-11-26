@@ -47,19 +47,19 @@ The coordinator decides the order and which campaigns run in parallel. Code deci
 
 ## Results
 
-One run of `evals/run_evals.py` on 25 Nov 2026, model `claude-haiku-5-5` for every agent and for the grader's judge calls.
+One run of `evals/run_evals.py` on 26 Nov 2026, model `claude-haiku-5-5` for every agent and for the grader's judge calls.
 
 | Measure | Value |
 | --- | --- |
-| Cases passed | 12 of 13 |
-| Campaign outcomes | 26 of 27 |
-| Fields | 165 of 166 |
+| Cases passed | 13 of 13 |
+| Campaign outcomes | 27 of 27 |
+| Fields | 166 of 166 |
 | LLM judge checks | 68 of 68 |
-| Tokens | 242,832 in, 38,088 out |
-| Cost | $0.0433 |
-| Wall-clock time | 84.5 s (3 cases at a time) |
+| Tokens | 228,513 in, 35,339 out |
+| Cost | $0.0405 |
+| Wall-clock time | 76.6 s (3 cases at a time) |
 
-The failed case is `two-deadlines`: the brief gives 15 November and, in a postscript, 22 November as the date for final assets. The agent kept 15 November and handed the campaign off. The expected result is no deadline and an escalation.
+Two earlier full runs on the same code each passed 12 of 13, failing a different case each time (`multi-campaign`, `wrong-dimensions`); both cases passed 4 of 4 when run alone.
 
 The cases are written by the maintainer, and a single run is one sample. <!-- TODO: repeat the run to report variance -->
 
@@ -79,7 +79,6 @@ The cases are written by the maintainer, and a single run is one sample. <!-- TO
 - Briefs and traces go to Langfuse Cloud when keys are set, which is safe only because all data is mock (ADR 0006).
 - The cost table is hand-kept and will go stale.
 - Every agent runs on the fast model; there is no comparison across models. <!-- TODO: run the evals on a larger model and add the comparison -->
-- The failing eval case above is not fixed.
 - The dataset has 13 cases, all written by the maintainer.
 
 ## Stack

@@ -344,6 +344,7 @@ async def test_each_campaign_gets_its_own_structured_brief_and_missing_fields(
         "never derive the deadline from deliverable due dates",
         "due date is after the deadline",
         "more than one deadline",
+        "keep any due date the Brief states for a specific deliverable",
         "not a Brief",
         "one structured brief per campaign",
         "stated once for all campaigns",

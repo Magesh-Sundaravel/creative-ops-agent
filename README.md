@@ -125,7 +125,6 @@ uv run python evals/run_evals.py
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `ANTHROPIC_API_KEY` | yes | | API key |
-| `MODEL_MAIN` | no | `claude-sonnet-5-5` | Not used by any agent yet |
 | `MODEL_FAST` | no | `claude-haiku-5-5` | Model every agent and the eval judge use |
 | `LOG_LEVEL` | no | `INFO` | Log level |
 | `LANGFUSE_PUBLIC_KEY` | no | | With the secret key, turns on tracing |

@@ -1,4 +1,4 @@
-"""Streamlit UI: submit a Brief and see its campaign outcomes and open Escalations."""
+"""Streamlit UI: submit a Brief and see each stage's work, its outcomes and open Escalations."""
 
 import asyncio
 from typing import Any
@@ -14,10 +14,26 @@ from creative_ops.agents.coordinator import (
     ConfirmTask,
     CoordinatorResult,
     Escalation,
+    EscalationReason,
     Retry,
 )
+from creative_ops.agents.review import Finding
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
 from creative_ops.loop.agent_loop import LoopResult, TokenUsage
+from creative_ops.schemas.brief import Budget
+
+REASONS: dict[EscalationReason, str] = {
+    "missing_critical_field": "A Critical Field is missing",
+    "cannot_review": "The campaign can't be reviewed",
+    "not_a_brief": "The Brief names no campaign",
+    "unnamed_campaign": "The campaign has no name",
+    "duplicate_campaign": "Two campaigns share a name",
+    "unmatched_campaign": "A closed campaign may be listed under another name",
+    "revisions_requested": "Review requested revisions",
+    "run_failed": "An agent Run failed twice",
+    "task_may_exist": "A Task may already exist for this campaign",
+}
+SOURCES = {"check": "Code check", "judgement": "Model judgement"}
 
 
 class UISettings(BaseSettings):
@@ -104,7 +120,7 @@ def answer_controls(
         if campaign is None or campaign.brand is None or campaign.campaign_name is None:
             st.warning("This Escalation needs a Task check, but names no campaign to answer.")
             continue
-        label = f"{campaign.brand} / {campaign.campaign_name}"
+        label = campaign_label(campaign.brand, campaign.campaign_name)
         exists = st.radio(f"Task exists for {label}?", ["Yes", "No"], key=f"confirm-{i}-{key}")
         if st.button("Confirm", key=f"confirm-button-{i}-{key}"):
             _send(
@@ -117,30 +133,151 @@ def answer_controls(
             )
 
 
+def campaign_label(brand: str | None, campaign_name: str | None) -> str:
+    """A campaign's name for display, saying so when intake found no brand or name."""
+    return f"{brand or 'Unknown brand'} / {campaign_name or 'Unnamed campaign'}"
+
+
+def brief_label(item: BriefSummary) -> str:
+    """A Brief's sidebar label: its campaigns, or when it came in if it has none yet."""
+    names = ", ".join(campaign_label(c.brand, c.campaign_name) for c in item.campaigns)
+    return f"{names or f'{item.submitted_at:%Y-%m-%d %H:%M}'} · {item.status}"
+
+
+def _text(value: object) -> str:
+    """A Structured Brief field's value as display text; empty when the Brief gives none."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return "; ".join(str(item) for item in value)
+    if isinstance(value, Budget):
+        return " ".join(str(part) for part in (value.amount, value.currency) if part is not None)
+    return str(value)
+
+
+def findings_table(findings: list[Finding]) -> None:
+    """Findings as a table of subject, rule, severity, explanation and source."""
+    st.dataframe(
+        [
+            {
+                "Subject": str(f.subject),
+                "Rule": f.rule,
+                "Severity": f.severity,
+                "Explanation": f.explanation,
+                "Source": SOURCES[f.source],
+            }
+            for f in findings
+        ],
+        hide_index=True,
+    )
+
+
+def escalation_details(escalation: Escalation) -> None:
+    """An Escalation's readable reason, what it needs and the Brief's Ambiguities."""
+    st.error(f"Escalated: {REASONS[escalation.reason]}")
+    for need in escalation.needs:
+        st.markdown(f"- Needs: {need}")
+    for ambiguity in escalation.ambiguities:
+        st.markdown(f"- Ambiguity: {ambiguity}")
+
+
 def outcome_card(campaign: CampaignOutcome) -> None:
     """One campaign's outcome: handed off, revisions requested, escalated, or unfinished."""
     with st.container(border=True):
-        st.subheader(f"{campaign.brand} / {campaign.campaign_name}")
-        if campaign.handoff:
+        st.markdown(f"**{campaign_label(campaign.brand, campaign.campaign_name)}**")
+        if campaign.escalation:
+            escalation_details(campaign.escalation)
+        elif campaign.handoff:
             st.success(f"Handed off, Task {campaign.handoff.task_id}")
         elif campaign.revisions_requested:
-            st.warning("Revisions requested")
+            st.warning("Closed: revisions requested")
         elif campaign.task_may_exist:
             st.info(f"Closed against Task {campaign.task_id}")
-        elif campaign.escalation:
-            st.error(f"Escalated: {campaign.escalation.reason}")
         else:
             st.write("Unfinished")
 
 
-def escalation_view(escalation: Escalation, title: str) -> None:
-    """An open Escalation's reason, what it needs and the Brief's Ambiguities."""
-    with st.container(border=True):
-        st.markdown(f"**{title}**: {escalation.reason}")
-        for need in escalation.needs:
-            st.markdown(f"- Needs: {need}")
-        for ambiguity in escalation.ambiguities:
-            st.markdown(f"- Ambiguity: {ambiguity}")
+def intake_view(results: list[CoordinatorResult]) -> None:
+    """The latest Intake's Structured Briefs, with Missing Fields; critical ones stand out."""
+    runs = [r for r in results if r.loop_result is not None]  # each Coordinator Run re-intakes
+    intakes = runs[-1].intakes if runs else []
+    campaigns = intakes[-1].campaigns if intakes else []
+    if not campaigns:
+        st.caption("No Structured Brief in the latest Run.")
+    for c in campaigns:
+        with st.container(border=True):
+            st.markdown(f"**{campaign_label(c.brief.brand, c.brief.campaign_name)}**")
+            critical = [f for f in c.missing_fields if f in c.critical_fields]
+            other = [f for f in c.missing_fields if f not in c.critical_fields]
+            if critical:
+                st.error("Missing Critical Fields: " + ", ".join(f"`{f}`" for f in critical))
+            if other:
+                st.warning("Missing Fields: " + ", ".join(f"`{f}`" for f in other))
+            st.dataframe(
+                [
+                    {"Field": name, "Value": _text(value)}
+                    for name, value in c.brief
+                    if name != "deliverables"
+                ],
+                hide_index=True,
+            )
+            if c.brief.deliverables:
+                st.markdown("Deliverables")
+                st.dataframe(
+                    [d.model_dump(mode="json") for d in c.brief.deliverables], hide_index=True
+                )
+
+
+def review_view(campaigns: list[CampaignOutcome]) -> None:
+    """Each campaign's Review: its Verdict and Findings."""
+    reviewed = [(c, r) for c in campaigns if (r := c.review)]
+    if not reviewed:
+        st.caption("No Review yet.")
+    for c, r in reviewed:
+        with st.container(border=True):
+            st.markdown(f"**{campaign_label(c.brand, c.campaign_name)}**")
+            if r.verdict == "approved":
+                st.success("Approved")
+            else:
+                st.warning("Revisions requested")
+            if r.findings:
+                findings_table(r.findings)
+            else:
+                st.caption("No Findings.")
+
+
+def handoff_view(campaigns: list[CampaignOutcome]) -> None:
+    """Each Handoff Package: deliverables and their Assets, legal lines, rights, notes, Task."""
+    handed_off = [(c, p) for c in campaigns if (p := c.handoff)]
+    if not handed_off:
+        st.caption("No Handoff yet.")
+    for c, p in handed_off:
+        with st.container(border=True):
+            st.markdown(f"**{campaign_label(c.brand, c.campaign_name)}**")
+            st.success(f"Task {p.task_id}" + (f", due {p.deadline}" if p.deadline else ""))
+            st.dataframe(
+                [
+                    {
+                        **item.deliverable.model_dump(mode="json"),
+                        "assets": ", ".join(f"{a.file_name} ({a.id})" for a in item.assets),
+                    }
+                    for item in p.deliverables
+                ],
+                hide_index=True,
+            )
+            rights = p.usage_rights
+            st.markdown(
+                f"**Usage Rights:** {', '.join(rights.territories)}; "
+                f"{', '.join(rights.channels)}; until {rights.expires_on}"
+            )
+            st.markdown("**Legal lines**")
+            for line in p.legal_lines:
+                st.markdown(f"- {line}")
+            st.markdown("**Production notes**")
+            st.write(p.production_notes)
+            if p.notes:
+                st.markdown("**Advisory Findings**")
+                findings_table(p.notes)
 
 
 def trace_runs(
@@ -185,38 +322,44 @@ def trace_view(results: list[CoordinatorResult]) -> None:
 
 
 def brief_pane(brief_id: str) -> None:
-    """The selected Brief's status, campaign outcomes and open Escalations."""
+    """The selected Brief: its outcome and open Escalations, then each stage's work."""
     try:
         brief = get_brief(brief_id)
     except API_ERRORS as exc:
         st.error(f"Can't load the Brief: {exc}")  # polling goes on, and recovers with the API
         return
     st.markdown(f"**Status:** {brief.status}")
-    with st.expander("Brief as received"):
-        st.text(brief.brief)
     if brief.error:
         st.error(brief.error)
-    if brief.results:
-        result = brief.results[-1]
-        for campaign in result.campaigns:
-            outcome_card(campaign)
+    results = brief.results
+    if results:
+        st.header("Outcome")
+        result = results[-1]
         open_escalations: list[tuple[Escalation, CampaignOutcome | None]] = []
         if result.escalation:
-            escalation_view(result.escalation, "Brief")
+            with st.container(border=True):
+                st.markdown("**The whole Brief**")
+                escalation_details(result.escalation)
             open_escalations.append((result.escalation, None))
         for campaign in result.campaigns:
+            outcome_card(campaign)
             if campaign.escalation:
-                escalation_view(campaign.escalation, f"{campaign.brand} / {campaign.campaign_name}")
                 open_escalations.append((campaign.escalation, campaign))
         if brief.status == "escalated":
-            answer_controls(brief_id, open_escalations, str(len(brief.results)))
-    if brief.results:
+            answer_controls(brief_id, open_escalations, str(len(results)))
+    st.header("Brief")
+    st.text(brief.brief)
+    for amendment in brief.amendments:
+        st.markdown(f"**Amendment:** {amendment}")
+    if results:
+        st.header("Intake")
+        intake_view(results)
+        st.header("Review")
+        review_view(results[-1].campaigns)
+        st.header("Handoff")
+        handoff_view(results[-1].campaigns)
         with st.expander("Trace"):
-            trace_view(brief.results)
-    if brief.amendments:
-        st.markdown("**Amendments**")
-        for amendment in brief.amendments:
-            st.markdown(f"> {amendment}")
+            trace_view(results)
     if brief.status != "running" and st.session_state.pop("polling", None) == brief_id:
         st.rerun()  # the Run finished: rerun the page so it stops polling
 
@@ -224,19 +367,22 @@ def brief_pane(brief_id: str) -> None:
 with st.sidebar:
     text = st.text_area("New Brief")
     if st.button("Submit"):
-        try:
-            st.session_state["selected"] = submit_brief(text)
-        except API_ERRORS as exc:
-            st.error(str(exc))
+        if not text.strip():
+            st.warning("Write a Brief before submitting.")
+        else:
+            try:
+                st.session_state["selected"] = submit_brief(text)
+            except API_ERRORS as exc:
+                st.error(str(exc))
     st.divider()
     try:
         for item in list_briefs():
-            label = f"{item.submitted_at:%Y-%m-%d %H:%M:%S} · {item.status}"
-            if st.button(label, key=item.id):
+            if st.button(brief_label(item), key=item.id, width="stretch"):
                 st.session_state["selected"] = item.id
     except API_ERRORS as exc:
         st.error(f"Can't reach the API: {exc}")
 
+st.title("Creative Ops")
 selected = st.session_state.get("selected")
 if selected:
     try:

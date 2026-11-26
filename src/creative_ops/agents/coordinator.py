@@ -178,6 +178,8 @@ class CampaignOutcome(BaseModel):
 
     brand: str | None
     campaign_name: str | None
+    review: ReviewResult | None = None
+    """The campaign's latest Review in the Run that recorded this outcome."""
     handoff: HandoffPackage | None = None
     escalation: Escalation | None = None
     revisions_requested: bool = False
@@ -412,6 +414,7 @@ async def _coordinate(
             raise ToolResultError(permission_denied("Review failed twice; escalated to a human."))
         reviews.append(result)
         current_review[(key.brand, key.campaign_name)] = result
+        outcomes[(key.brand, key.campaign_name)].review = result
         blocking = [f for f in result.findings if f.severity == "blocking"]
         if result.verdict == "revisions_requested":
             # Never retried: the work goes back to the creative team.

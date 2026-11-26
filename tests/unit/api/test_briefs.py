@@ -109,7 +109,16 @@ def test_running_then_done(http, fakes):
 
     fakes.gate.set()
     done = _wait(http, brief_id, "done")
-    assert set(done) == {"id", "status", "submitted_at", "brief", "amendments", "results", "error"}
+    assert set(done) == {
+        "id",
+        "status",
+        "submitted_at",
+        "campaigns",
+        "brief",
+        "amendments",
+        "results",
+        "error",
+    }
     assert done["brief"] == "A brief"
     assert done["amendments"] == []
     assert done["results"] == [fakes.result.model_dump(mode="json")]
@@ -162,7 +171,7 @@ def test_list_is_newest_first(http):
     listed = http.get("/briefs").json()
 
     assert [b["id"] for b in listed] == [second, first]
-    assert set(listed[0]) == {"id", "status", "submitted_at"}
+    assert set(listed[0]) == {"id", "status", "submitted_at", "campaigns"}
 
 
 def test_unknown_id_is_404(http):

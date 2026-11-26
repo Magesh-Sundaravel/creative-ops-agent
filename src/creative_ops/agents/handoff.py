@@ -10,11 +10,11 @@ from creative_ops.agents.review import Finding, ReviewResult
 from creative_ops.loop.agent_loop import LoopResult, run
 from creative_ops.schemas.brief import Deliverable, StructuredBrief
 from creative_ops.schemas.client_stack import (
-    Asset,
     AssetList,
     BrandGuidelines,
     Task,
     ToolError,
+    UsageRights,
     permission_denied,
 )
 from creative_ops.tools.mcp_adapter import ClientStackError, call_tool, mcp_tools, read_resource
@@ -25,8 +25,8 @@ You are a handoff agent for a creative agency. The campaign's Assets have passed
 Hand the work to production: create one Task in the tracker with `tracker_create_task`, \
 then record your production notes with `submit_handoff`.
 
-The <handoff_facts> are already settled: which Assets cover each deliverable, the mandatory \
-legal lines, the Usage Rights every covering Asset shares, the deadline and advisory notes. \
+The <handoff_facts> are already settled: which Assets cover each deliverable and each \
+Asset's Usage Rights, the mandatory legal lines, the deadline and advisory notes. \
 Write the Task's title and description and your production notes from them."""
 
 
@@ -62,10 +62,11 @@ class SubmitHandoff(BaseModel):
 
 
 class AssetRef(BaseModel):
-    """An Asset as production needs to find it."""
+    """An Asset as production needs to find and publish it."""
 
     id: str
     file_name: str
+    usage_rights: UsageRights
 
 
 class PackagedDeliverable(BaseModel):
@@ -75,14 +76,6 @@ class PackagedDeliverable(BaseModel):
     assets: list[AssetRef]
 
 
-class RightsSummary(BaseModel):
-    """The Usage Rights shared by every covering Asset, and the earliest expiry."""
-
-    territories: list[str]
-    channels: list[str]
-    expires_on: date
-
-
 class HandoffFacts(BaseModel):
     """The parts of a Handoff Package that code assembles from verified data."""
 
@@ -90,7 +83,6 @@ class HandoffFacts(BaseModel):
     campaign_name: str
     deliverables: list[PackagedDeliverable]
     legal_lines: list[str]
-    usage_rights: RightsSummary
     deadline: date | None
     notes: list[Finding]
 
@@ -101,12 +93,6 @@ class HandoffPackage(HandoffFacts):
     production_notes: str
     task_id: str
     loop_result: LoopResult
-
-
-def _shared(lists: list[list[str]]) -> list[str]:
-    """The items in every list, in the order of the first."""
-    first, *rest = lists
-    return [item for item in first if all(item in other for other in rest)]
 
 
 async def _assemble_facts(
@@ -123,9 +109,6 @@ async def _assemble_facts(
     guidelines = await read_resource(
         session, f"brand://guidelines/{review.brand}", TypeAdapter(BrandGuidelines)
     )
-    covering: list[Asset] = [
-        assets[asset_id] for i in sorted(review.coverage) for asset_id in review.coverage[i]
-    ]
     return HandoffFacts(
         brand=review.brand,
         campaign_name=brief.campaign_name,
@@ -133,18 +116,17 @@ async def _assemble_facts(
             PackagedDeliverable(
                 deliverable=deliverable,
                 assets=[
-                    AssetRef(id=asset_id, file_name=assets[asset_id].file_name)
+                    AssetRef(
+                        id=asset_id,
+                        file_name=assets[asset_id].file_name,
+                        usage_rights=assets[asset_id].usage_rights,
+                    )
                     for asset_id in review.coverage[i]
                 ],
             )
             for i, deliverable in enumerate(brief.deliverables)
         ],
         legal_lines=guidelines.mandatory_legal_lines,
-        usage_rights=RightsSummary(
-            territories=_shared([a.usage_rights.territories for a in covering]),
-            channels=_shared([a.usage_rights.channels for a in covering]),
-            expires_on=min(a.usage_rights.expires_on for a in covering),
-        ),
         deadline=brief.deadline,
         notes=[f for f in review.findings if f.severity == "advisory"],
     )

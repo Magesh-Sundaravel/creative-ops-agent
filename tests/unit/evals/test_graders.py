@@ -11,7 +11,7 @@ from creative_ops.agents.coordinator import (
     Escalation,
     EscalationReason,
 )
-from creative_ops.agents.handoff import HandoffPackage, RightsSummary
+from creative_ops.agents.handoff import HandoffPackage
 from creative_ops.agents.intake import CampaignIntake, IntakeResult
 from creative_ops.config import get_settings
 from creative_ops.loop.agent_loop import LoopResult, StopOutcome, TokenUsage
@@ -66,7 +66,6 @@ def package(brand: str, campaign_name: str) -> HandoffPackage:
         campaign_name=campaign_name,
         deliverables=[],
         legal_lines=[],
-        usage_rights=RightsSummary(territories=[], channels=[], expires_on=date(2032, 9, 30)),
         deadline=None,
         notes=[],
         production_notes="",

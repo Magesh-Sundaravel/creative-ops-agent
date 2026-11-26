@@ -8,7 +8,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: SecretStr
-    model_main: str = "claude-sonnet-5-5"
     model_fast: str = "claude-haiku-5-5"
     log_level: str = "INFO"
     langfuse_public_key: SecretStr | None = None

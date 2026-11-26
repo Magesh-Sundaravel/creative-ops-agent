@@ -26,6 +26,7 @@ from creative_ops.api.models import (
     BriefId,
     BriefRecord,
     BriefSummary,
+    CampaignName,
     SubmitBrief,
 )
 from creative_ops.logs import current_brief_id
@@ -61,6 +62,9 @@ def create_app(
                 return
             record.error = None
             record.results.append(result)
+            record.campaigns = [
+                CampaignName(brand=c.brand, campaign_name=c.campaign_name) for c in result.campaigns
+            ]
             record.state = result.state
             record.status = "escalated" if result.state else "done"
             final = result.loop_result.text if result.loop_result else None
@@ -95,6 +99,7 @@ def create_app(
             id=uuid4().hex,
             status="running",
             submitted_at=datetime.now(UTC),
+            campaigns=[],
             brief=body.text,
             amendments=[],
             results=[],

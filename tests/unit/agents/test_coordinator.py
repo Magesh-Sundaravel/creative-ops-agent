@@ -882,6 +882,17 @@ async def test_coordinate_revisions_requested_escalates_campaign_with_blocking_f
     assert len(client.messages.calls[REVIEW]) == 2  # one Review Run, not retried
 
 
+async def test_coordinate_reviewed_campaign_outcome_holds_its_review(
+    connect_without_flaws, rejected_run
+):
+    async with connect_without_flaws() as session:
+        result = await coordinate(rejected_run(), session, BRIEF, today=TODAY)
+
+    [outcome] = result.campaigns
+    assert outcome.review.verdict == "revisions_requested"
+    assert [(f.subject, f.rule) for f in outcome.review.findings] == [("AST-001", "tone")]
+
+
 async def test_coordinate_handoff_of_campaign_not_approved_is_permission_denied_and_creates_no_task(
     connect_without_flaws, rejected_run
 ):

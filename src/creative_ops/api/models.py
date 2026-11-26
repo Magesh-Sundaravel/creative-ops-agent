@@ -28,9 +28,18 @@ class BriefId(BaseModel):
     id: str
 
 
+class CampaignName(BaseModel):
+    """How a campaign is named, as far as intake found a brand and a name for it."""
+
+    brand: str | None
+    campaign_name: str | None
+
+
 class BriefSummary(BriefId):
     status: Status
     submitted_at: datetime
+    campaigns: list[CampaignName]
+    """The campaigns of the latest successful Run; empty until one finishes."""
 
 
 class BriefDetail(BriefSummary):

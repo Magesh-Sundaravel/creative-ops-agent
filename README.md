@@ -71,15 +71,15 @@ One run of `evals/run_evals.py` on 26 Nov 2026, model `claude-haiku-5-5` for eve
 
 | Measure | Value |
 | --- | --- |
-| Cases passed | 13 of 13 |
-| Campaign outcomes | 27 of 27 |
-| Fields | 166 of 166 |
-| LLM judge checks | 68 of 68 |
-| Tokens | 228,513 in, 35,339 out |
-| Cost | $0.0405 |
-| Wall-clock time | 76.6 s (3 cases at a time) |
+| Cases passed | 14 of 14 |
+| Campaign outcomes | 29 of 29 |
+| Fields | 178 of 178 |
+| LLM judge checks | 73 of 73 |
+| Tokens | 238,808 in, 38,391 out |
+| Cost | $0.0431 |
+| Wall-clock time | 82.0 s (3 cases at a time) |
 
-Two earlier full runs on the same code each passed 12 of 13, failing a different case each time (`multi-campaign`, `wrong-dimensions`); both cases passed 4 of 4 when run alone.
+Two earlier full runs on the same code, with the 13-case dataset, each passed 12 of 13, failing a different case each time (`multi-campaign`, `wrong-dimensions`); both cases passed 4 of 4 when run alone.
 
 The cases are written by the maintainer, and a single run is one sample. <!-- TODO: repeat the run to report variance -->
 
@@ -99,7 +99,7 @@ The cases are written by the maintainer, and a single run is one sample. <!-- TO
 - Briefs and traces go to Langfuse Cloud when keys are set, which is safe only because all data is mock (ADR 0006).
 - The cost table is hand-kept and will go stale.
 - Every agent runs on the fast model; there is no comparison across models. <!-- TODO: run the evals on a larger model and add the comparison -->
-- The dataset has 13 cases, all written by the maintainer.
+- The dataset has 14 cases, all written by the maintainer.
 
 ## Stack
 

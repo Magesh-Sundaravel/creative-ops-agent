@@ -2,7 +2,27 @@
 
 A coordinator agent that takes a fashion creative brief from intake to production handoff, delegating to intake, review and handoff subagents that act on a mock client stack.
 
-<!-- TODO: demo (GIF or short video of the Streamlit UI: submit a brief, view the trace, answer an escalation) -->
+## Demo
+
+One run of the Streamlit UI on a Loomhouse brief for the Winter Knit Edit.
+
+The Brief is submitted from the sidebar and the run is handed off.
+
+![Submitted Brief and the run's outcome](screenshots/brief.png)
+
+Intake turns the Brief into a `StructuredBrief` and flags its missing fields.
+
+![Intake: the StructuredBrief with missing fields flagged](screenshots/intake.png)
+
+Review approves the Assets, with advisory Findings for a person to check.
+
+![Review: approved, with advisory Findings](screenshots/review.png)
+
+Handoff creates the tracker task and the Handoff Package, with Usage Rights per Asset.
+
+![Handoff: tracker task, deliverables and production notes](screenshots/handoff-1.png)
+
+![Handoff: advisory Findings and the collapsed Trace](screenshots/handoff-2.png)
 
 ## Problem
 

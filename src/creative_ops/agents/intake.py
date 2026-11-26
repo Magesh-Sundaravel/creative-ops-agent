@@ -29,8 +29,9 @@ ambiguity quoting the Brief.
 only per-deliverable dates.
 - If a deliverable's due date is after the deadline, add an ambiguity.
 - If the Brief gives more than one deadline for a campaign (such as a stated deadline and a \
-later "final assets by" date), leave the deadline and every deliverable's due date empty, \
-and add one ambiguity quoting both dates.
+later "final assets by" date), leave the deadline empty and copy neither date onto the \
+deliverables; keep any due date the Brief states for a specific deliverable. Add one \
+ambiguity quoting both dates.
 - Record the campaign name without the season, brand or any other qualifier the Brief \
 puts beside it: "Resort Shirting (SS29)" is campaign name "Resort Shirting", season "SS29".
 - Copy a fact stated once for all campaigns (such as a shared deadline, brand or usage \

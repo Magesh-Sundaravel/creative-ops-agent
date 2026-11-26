@@ -73,7 +73,7 @@ The result of a review: approved when there are no blocking Findings, and revisi
 _Avoid_: Decision, outcome, status
 
 **Handoff Package**:
-Everything production needs to deliver an approved campaign: which Assets cover each deliverable, the Usage Rights, mandatory legal lines, the deadline, notes, and the Task created for the work.
+Everything production needs to deliver an approved campaign: which Assets cover each deliverable and each Asset's Usage Rights, mandatory legal lines, the deadline, notes, and the Task created for the work.
 _Avoid_: Handover, delivery pack, output
 
 **Gate**:

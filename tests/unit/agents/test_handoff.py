@@ -129,30 +129,39 @@ async def test_handoff_package_carries_facts_assembled_from_the_client_stack(
         ("Facebook", [("AST-008", "loomhouse_spring-linen_fb-feed_20s.mp4")]),
     ]
     assert package.legal_lines == ["Loomhouse is a trading name of Loomhouse Ltd."]
-    assert package.usage_rights.model_dump() == {
-        "territories": ["UK", "EU"],
-        "channels": ["instagram", "facebook"],
-        "expires_on": date(2031, 3, 31),
-    }
+    assert [
+        (a.id, a.usage_rights.model_dump()) for d in package.deliverables for a in d.assets
+    ] == [
+        (
+            asset_id,
+            {"territories": ["UK", "EU"], "channels": channels, "expires_on": date(2031, 3, 31)},
+        )
+        for asset_id, channels in [
+            ("AST-001", ["instagram", "facebook"]),
+            ("AST-004", ["instagram", "facebook"]),
+            ("AST-008", ["facebook", "instagram"]),
+        ]
+    ]
     assert package.deadline == date(2031, 3, 1)
     assert package.notes == [ADVISORY]
 
 
-async def test_handoff_usage_rights_summary_keeps_only_what_every_covering_asset_shares(
+async def test_handoff_assets_with_disjoint_channels_each_keep_their_own_usage_rights(
     connect, fake_client, make_message
 ):
     client = fake_client(
         make_message("tool_use", tool_uses=[create("t1"), submit("t2")]),
         make_message("end_turn"),
     )
-    # AST-001 covers instagram and facebook; AST-006 covers website and email.
     review = REVIEW.model_copy(update={"coverage": {0: ["AST-001"], 1: ["AST-006"]}})
 
     async with connect() as session:
         package = await handoff(client, session, BRIEF, review)
 
-    assert package.usage_rights.territories == ["UK", "EU"]
-    assert package.usage_rights.channels == []
+    assert [(a.id, a.usage_rights.channels) for d in package.deliverables for a in d.assets] == [
+        ("AST-001", ["instagram", "facebook"]),
+        ("AST-006", ["website", "email"]),
+    ]
 
 
 @pytest.mark.parametrize("calls", [[create("t1")], [submit("t1")]], ids=["no-submit", "no-create"])

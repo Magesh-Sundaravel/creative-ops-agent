@@ -260,15 +260,16 @@ def handoff_view(campaigns: list[CampaignOutcome]) -> None:
                     {
                         **item.deliverable.model_dump(mode="json"),
                         "assets": ", ".join(f"{a.file_name} ({a.id})" for a in item.assets),
+                        "usage_rights": " | ".join(
+                            f"{a.id}: {', '.join(a.usage_rights.territories)}; "
+                            f"{', '.join(a.usage_rights.channels)}; "
+                            f"until {a.usage_rights.expires_on}"
+                            for a in item.assets
+                        ),
                     }
                     for item in p.deliverables
                 ],
                 hide_index=True,
-            )
-            rights = p.usage_rights
-            st.markdown(
-                f"**Usage Rights:** {', '.join(rights.territories)}; "
-                f"{', '.join(rights.channels)}; until {rights.expires_on}"
             )
             st.markdown("**Legal lines**")
             for line in p.legal_lines:

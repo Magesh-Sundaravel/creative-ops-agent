@@ -20,7 +20,7 @@ from creative_ops.agents.coordinator import (
 from creative_ops.agents.review import Finding
 from creative_ops.api.models import BriefDetail, BriefId, BriefSummary
 from creative_ops.loop.agent_loop import LoopResult, TokenUsage
-from creative_ops.schemas.brief import Budget
+from creative_ops.schemas.brief import Budget, Deliverable
 
 REASONS: dict[EscalationReason, str] = {
     "missing_critical_field": "A Critical Field is missing",
@@ -155,9 +155,14 @@ def _text(value: object) -> str:
     return str(value)
 
 
+def deliverable_row(deliverable: Deliverable) -> dict[str, str]:
+    """A deliverable as a table row; an empty value shows blank."""
+    return {name: _text(value) for name, value in deliverable}
+
+
 def findings_table(findings: list[Finding]) -> None:
     """Findings as a table of subject, rule, severity, explanation and source."""
-    st.dataframe(
+    st.table(  # a static table wraps long explanations instead of cutting them off
         [
             {
                 "Subject": str(f.subject),
@@ -219,13 +224,12 @@ def intake_view(results: list[CoordinatorResult]) -> None:
                     for name, value in c.brief
                     if name != "deliverables"
                 ],
+                height="content",
                 hide_index=True,
             )
             if c.brief.deliverables:
                 st.markdown("Deliverables")
-                st.dataframe(
-                    [d.model_dump(mode="json") for d in c.brief.deliverables], hide_index=True
-                )
+                st.dataframe([deliverable_row(d) for d in c.brief.deliverables], hide_index=True)
 
 
 def review_view(campaigns: list[CampaignOutcome]) -> None:
@@ -258,7 +262,7 @@ def handoff_view(campaigns: list[CampaignOutcome]) -> None:
             st.dataframe(
                 [
                     {
-                        **item.deliverable.model_dump(mode="json"),
+                        **deliverable_row(item.deliverable),
                         "assets": ", ".join(f"{a.file_name} ({a.id})" for a in item.assets),
                         "usage_rights": " | ".join(
                             f"{a.id}: {', '.join(a.usage_rights.territories)}; "
